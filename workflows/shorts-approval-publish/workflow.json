@@ -1,0 +1,1356 @@
+{
+  "name": "Shorts approval and publish (template)",
+  "nodes": [
+    {
+      "name": "Sticky: Approval Workflow",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        96,
+        -992
+      ],
+      "parameters": {
+        "content": "## [YCAT/client-slug] Shorts Approval & Publish\n\n**Per-client copy** of this template. Each client's main-pipeline copy generates magic-link URLs pointing to this client's specific approval webhook path.\n\n### Two trigger modes\n\n**A. Magic-link click** (Webhook GET on `/client-slug-shorts-approve`)\nURL: `N8N_BASE_URL/webhook/client-slug-shorts-approve?clip=<id>&folder=<id>&action=<approve|skip|regenerate>`\n\n**B. Free-text email reply** (Gmail Trigger polls `label:client:client-slug` for replies)\nAgent + Gemini parses the reply → emits per-clip JSON decisions.\n\n### Both paths converge on Switch:\n- approve → Klap export → Gemini gen title+desc+3 hashtags → YouTube upload (CLIENT cred)\n- regenerate → re-trigger main workflow (TODO sticky)\n- skip → log to YCAT sheet\n\n### Per-client setup:\n1. Save As Copy → rename `[YCAT/<Client>] Shorts Approval & Publish`\n2. Search/replace `client-slug` → client slug (affects webhook path + filters)\n3. Wire YCAT Gmail credential to Email Reply trigger\n4. Wire CLIENT YouTube OAuth to YouTube Upload node\n5. Activate.\n\n### Changelog\n- 2026-05-25 (Block 4):\n  - Fixed Klap Export Status URL (back-reference bug)\n  - Fixed Prepare YouTube Upload Payload (back-reference bug)\n  - Forced YouTube `privacyStatus: private` for client-slug self-test\n  - Built regenerate branch (Klap re-submit + Gmail re-review)\n  - Added Log Approve → Sheet after successful upload\n  - Moved Respond to Webhook to fire immediately after magic-link click",
+        "height": 668,
+        "width": 1320,
+        "color": 5
+      }
+    },
+    {
+      "name": "Webhook: client-slug-shorts-approve",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -704,
+        -160
+      ],
+      "parameters": {
+        "path": "client-slug-shorts-approve",
+        "responseMode": "responseNode",
+        "options": {}
+      }
+    },
+    {
+      "name": "Decision from Magic Link",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -464,
+        -160
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "wd-1",
+              "name": "clip_id",
+              "value": "={{ $json.query.clip }}",
+              "type": "string"
+            },
+            {
+              "id": "wd-2",
+              "name": "folder_id",
+              "value": "={{ $json.query.folder }}",
+              "type": "string"
+            },
+            {
+              "id": "wd-3",
+              "name": "action",
+              "value": "={{ $json.query.action }}",
+              "type": "string"
+            },
+            {
+              "id": "wd-4",
+              "name": "publish_when",
+              "value": "immediate",
+              "type": "string"
+            },
+            {
+              "id": "wd-5",
+              "name": "decision_source",
+              "value": "magic_link",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "name": "Gmail: Client Reply (label:client:client-slug)",
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -704,
+        112
+      ],
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "simple": false,
+        "filters": {
+          "q": "label:client:client-slug to:shorts@example.com (subject:Re OR subject:re)",
+          "readStatus": "unread"
+        },
+        "options": {}
+      }
+    },
+    {
+      "name": "Agent: Evaluate Client Reply",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [
+        -464,
+        112
+      ],
+      "parameters": {
+        "promptType": "define",
+        "text": "=The client replied to a review email containing N short clips. Their reply is below. Decide PER CLIP what they want.\n\nPossible actions per clip: approve, skip, regenerate.\nAlso extract: publish_when (immediate / scheduled / null) and a regenerate_focus (string or null).\n\nIf ambiguous, default to skip.\n\nOutput STRICT JSON:\n{ \"decisions\": [ { \"clip_id\": \"<id>\", \"action\": \"approve|skip|regenerate\", \"publish_when\": \"immediate|scheduled|null\", \"regenerate_focus\": \"<text>|null\" } ] }\n\n=== CLIENT REPLY ===\n{{ $json.text || $json.snippet || '' }}\n=== END ===",
+        "options": {}
+      }
+    },
+    {
+      "name": "Gemini Chat Model (for Agent)",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "position": [
+        -464,
+        288
+      ],
+      "parameters": {
+        "modelName": "models/gemini-2.5-flash-lite",
+        "options": {
+          "temperature": 0
+        }
+      }
+    },
+    {
+      "name": "Parse Agent Decisions",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -240,
+        112
+      ],
+      "parameters": {
+        "jsCode": "let output = $input.first().json.output;\nif (typeof output === 'string') {\n  const m = output.match(/\\{[\\s\\S]*\\}/);\n  output = m ? JSON.parse(m[0]) : { decisions: [] };\n}\nreturn output.decisions.map(d => ({ json: { ...d, decision_source: 'email_reply' } }));\n"
+      }
+    },
+    {
+      "name": "Merge Decisions",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        48,
+        -32
+      ],
+      "parameters": {}
+    },
+    {
+      "name": "Switch on action",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        272,
+        -32
+      ],
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "approve",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "approve"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "regenerate",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "regenerate"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.action }}",
+                    "rightValue": "skip",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "skip"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "name": "Klap: Export Clip",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        -176
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.klap.app/v2/projects/{{ $json.folder_id }}/{{ $json.clip_id }}/exports",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={ }",
+        "options": {}
+      }
+    },
+    {
+      "name": "Wait 30s (export)",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        704,
+        -176
+      ],
+      "parameters": {
+        "amount": 30
+      }
+    },
+    {
+      "name": "Klap: Export Status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        928,
+        -176
+      ],
+      "parameters": {
+        "url": "=https://api.klap.app/v2/projects/{{ $('Switch on action').item.json.folder_id }}/{{ $('Switch on action').item.json.clip_id }}/exports/{{ $('Klap: Export Clip').item.json.id }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      }
+    },
+    {
+      "name": "IF: Export Ready?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1152,
+        -176
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "cond-x1",
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "ready",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "name": "Gemini: Generate Title + Desc + 3 Hashtags",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1360,
+        -240
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"contents\": [{\n    \"parts\": [{\n      \"text\": \"Generate YouTube Shorts metadata for this clip.\\n\\nRules:\\n- title: <= 70 chars TOTAL including 3 hashtags. Compelling, hook-style.\\n- 3 hashtags: short, relevant, no spaces (e.g. #leadership). Embed AT END of title.\\n- description: 2-4 sentences on what the clip is about, end with a CTA to watch the full video.\\n\\nClip name: \" + ($('Klap: Export Status').item.json.name || 'short clip')\n    }]\n  }],\n  \"generationConfig\": {\n    \"responseMimeType\": \"application/json\",\n    \"responseJsonSchema\": {\n      \"type\": \"object\",\n      \"properties\": {\n        \"title\": {\"type\": \"string\"},\n        \"description\": {\"type\": \"string\"},\n        \"hashtags\": {\"type\": \"array\", \"items\": {\"type\": \"string\"}}\n      },\n      \"required\": [\"title\", \"description\", \"hashtags\"]\n    },\n    \"temperature\": 0.4\n  }\n}",
+        "options": {}
+      }
+    },
+    {
+      "name": "Prepare YouTube Upload Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1584,
+        -240
+      ],
+      "parameters": {
+        "jsCode": "const meta = JSON.parse($input.first().json.candidates[0].content.parts[0].text);\nconst exportData = $('Klap: Export Status').item.json;\nconst decision = $('Switch on action').item.json;\nconst hashtags = (meta.hashtags || []).slice(0, 3).map(h => h.startsWith('#') ? h : '#' + h).join(' ');\nconst titleRaw = (meta.title.includes('#') ? meta.title : (meta.title + ' ' + hashtags));\nconst title = titleRaw.slice(0, 100);\nreturn [{ json: {\n  src_url: exportData.src_url,\n  title,\n  description: meta.description,\n  publish_when: decision.publish_when || 'immediate',\n  privacy: 'private', // forced for client-slug self-test; switch to dynamic for production\n  clip_id: decision.clip_id,\n  folder_id: decision.folder_id,\n  decision_source: decision.decision_source,\n}}];\n"
+      }
+    },
+    {
+      "name": "YouTube: Upload as Short (CLIENT)",
+      "type": "n8n-nodes-base.youTube",
+      "typeVersion": 1,
+      "position": [
+        1808,
+        -240
+      ],
+      "parameters": {
+        "resource": "video",
+        "operation": "upload",
+        "title": "={{ $('Prepare YouTube Upload Payload').item.json.title }}",
+        "regionCode": "US",
+        "categoryId": "22",
+        "options": {
+          "description": "={{ $('Prepare YouTube Upload Payload').item.json.description }}",
+          "privacyStatus": "={{ $('Prepare YouTube Upload Payload').item.json.privacy }}",
+          "tags": "shorts,short"
+        }
+      }
+    },
+    {
+      "name": "Sticky: Regenerate (TODO)",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        496,
+        416
+      ],
+      "parameters": {
+        "content": "## Regenerate branch ✓\n\nBuilt 2026-05-25 (Block 4). Flow: Klap GET project → resubmit new task with `max_clip_count: 7` (bumped to nudge different selection) → poll → get clips → log → Gmail re-review email.\n\nNote: Klap doesn't accept a 'focus_intent' field in submit, so `regenerate_focus` from the email-reply agent is only stored in the sheet for human reference, not sent to Klap.",
+        "height": 280,
+        "width": 480,
+        "color": 4
+      }
+    },
+    {
+      "name": "Log Skip → Sheet (YCAT)",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        480,
+        224
+      ],
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_SHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Sheet1"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "timestamp": "={{ $now.toISO() }}",
+            "source_type": "decision",
+            "youtube_url": "",
+            "video_title": "={{ $json.clip_id }}",
+            "from_address": "={{ $json.decision_source }}",
+            "raw_email_excerpt": "client decided: skip",
+            "klap_task_id": "",
+            "klap_folder_id": "={{ $json.folder_id }}",
+            "status": "skipped"
+          },
+          "schema": [
+            {
+              "id": "timestamp",
+              "displayName": "timestamp",
+              "type": "string",
+              "display": true,
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "source_type",
+              "displayName": "source_type",
+              "type": "string",
+              "display": true,
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "youtube_url",
+              "displayName": "youtube_url",
+              "type": "string",
+              "display": true,
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "video_title",
+              "displayName": "video_title",
+              "type": "string",
+              "display": true,
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "from_address",
+              "displayName": "from_address",
+              "type": "string",
+              "display": true,
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "raw_email_excerpt",
+              "displayName": "raw_email_excerpt",
+              "type": "string",
+              "display": true,
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "klap_task_id",
+              "displayName": "klap_task_id",
+              "type": "string",
+              "display": true,
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "klap_folder_id",
+              "displayName": "klap_folder_id",
+              "type": "string",
+              "display": true,
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "type": "string",
+              "display": true,
+              "canBeUsedToMatch": true
+            }
+          ],
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
+    },
+    {
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        -240,
+        -304
+      ],
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "=Got it - your decision (\"{{ $json.action }}\") for clip {{ $json.clip_id }} has been recorded.\n\n{{ $json.action === 'approve' ? 'Klap export + YouTube upload kicking off now. '\n  + 'The short will appear in your YouTube channel as PRIVATE within ~2 min.' :\n  $json.action === 'regenerate' ? 'A fresh Klap run is starting. '\n  + 'New review email will arrive in ~2-3 min.' :\n  $json.action === 'skip' ? 'Skip logged. Nothing else will happen for this clip.' :\n  'Action logged.' }}\n\nYou can close this tab.",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "text/plain; charset=utf-8"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "Prepare Regen Submit",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        704,
+        64
+      ],
+      "parameters": {
+        "jsCode": "const row = $input.first().json;          // matched sheet row\nconst decision = $('Switch on action').item.json;\nconst source_url = row.youtube_url || '';\nif (!source_url) {\n  throw new Error('Could not resolve youtube_url for folder ' + (decision.folder_id || '?') + ' from the sheet.');\n}\nreturn [{ json: {\n  source_video_url: source_url,\n  max_clip_count: 7,\n  language: 'en',\n  max_clip_duration: 60,\n  regenerate_focus: decision.regenerate_focus || '',\n  regenerated_from_folder: decision.folder_id,\n  decision_source: decision.decision_source,\n}}];\n"
+      }
+    },
+    {
+      "name": "Klap: Resubmit Task (regen)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        928,
+        64
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.klap.app/v2/tasks/video-to-shorts",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"source_video_url\": $json.source_video_url,\n  \"language\": $json.language,\n  \"max_clip_count\": $json.max_clip_count,\n  \"target_clip_count\": $json.max_clip_count,\n  \"min_duration\": 15,\n  \"target_duration\": 45,\n  \"max_duration\": $json.max_clip_duration,\n  \"editing_options\": {\n    \"captions\": false, \"reframe\": true, \"emojis\": false,\n    \"remove_silences\": true, \"intro_title\": false\n  },\n  \"dimensions\": { \"width\": 1080, \"height\": 1920 }\n}",
+        "options": {}
+      }
+    },
+    {
+      "name": "Wait 1 min (regen)",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        1152,
+        64
+      ],
+      "parameters": {
+        "amount": 1,
+        "unit": "minutes"
+      }
+    },
+    {
+      "name": "Klap: Get Status (regen)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1360,
+        64
+      ],
+      "parameters": {
+        "url": "=https://api.klap.app/v2/tasks/{{ $('Klap: Resubmit Task (regen)').item.json.id }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      }
+    },
+    {
+      "name": "IF: Regen Status Ready?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1584,
+        64
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "regen-ready-1",
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "ready",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "name": "Klap: Get Shorts (regen)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1808,
+        0
+      ],
+      "parameters": {
+        "url": "=https://api.klap.app/v2/projects/{{ $json.output_id }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      }
+    },
+    {
+      "name": "Log Regen Shorts → Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        2032,
+        0
+      ],
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_SHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Sheet1"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "timestamp": "={{ $now.toISO() }}",
+            "source_type": "regenerated",
+            "youtube_url": "={{ $('Prepare Regen Submit').first().json.source_video_url }}",
+            "video_title": "={{ $json.name }}",
+            "from_address": "",
+            "raw_email_excerpt": "={{ ('regen of ' + ($('Prepare Regen Submit').item.json.regenerated_from_folder || '') + ' | focus: ' + ($('Prepare Regen Submit').item.json.regenerate_focus || '(none)')).slice(0,500) }}",
+            "klap_task_id": "={{ $json.id }}",
+            "klap_folder_id": "={{ $json.folder_id }}",
+            "status": "=virality_score:{{ $json.virality_score }}"
+          },
+          "schema": [
+            {
+              "id": "timestamp",
+              "displayName": "timestamp",
+              "type": "string",
+              "display": true,
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "source_type",
+              "displayName": "source_type",
+              "type": "string",
+              "display": true,
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "youtube_url",
+              "displayName": "youtube_url",
+              "type": "string",
+              "display": true,
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "video_title",
+              "displayName": "video_title",
+              "type": "string",
+              "display": true,
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "from_address",
+              "displayName": "from_address",
+              "type": "string",
+              "display": true,
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "raw_email_excerpt",
+              "displayName": "raw_email_excerpt",
+              "type": "string",
+              "display": true,
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "klap_task_id",
+              "displayName": "klap_task_id",
+              "type": "string",
+              "display": true,
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "klap_folder_id",
+              "displayName": "klap_folder_id",
+              "type": "string",
+              "display": true,
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "type": "string",
+              "display": true,
+              "canBeUsedToMatch": true
+            }
+          ],
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
+    },
+    {
+      "name": "Aggregate Regen Clips",
+      "type": "n8n-nodes-base.aggregate",
+      "typeVersion": 1,
+      "position": [
+        2240,
+        0
+      ],
+      "parameters": {
+        "aggregate": "aggregateAllItemData",
+        "options": {}
+      }
+    },
+    {
+      "name": "Render Regen Clip HTML",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2384,
+        0
+      ],
+      "parameters": {
+        "jsCode": "const clips = $input.first().json.data;\nconst projName = $('Klap: Get Status (regen)').item.json.name || 'regenerated set';\nconst base = 'N8N_BASE_URL/webhook/client-slug-shorts-approve';\nconst items = clips.map(c => {\n  const q = `?clip=${c.id}&folder=${c.folder_id}`;\n  const score = c.virality_score ?? 'n/a';\n  const name = c.name || ('Clip ' + String(c.id).slice(0, 6));\n  return `\n    <div style=\"border:1px solid #e1e4e8; border-radius:10px; padding:16px; margin:14px 0; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;\">\n      <h3 style=\"margin:0 0 6px; font-size:16px;\">${name}</h3>\n      <p style=\"margin:0 0 10px; color:#586069; font-size:13px;\">Virality: <strong>${score}</strong></p>\n      <p style=\"margin:0 0 14px;\"><a href=\"https://klap.app/player/${c.id}\" target=\"_blank\" style=\"color:#0366d6; text-decoration:none;\">> Preview clip</a></p>\n      <table cellpadding=\"0\" cellspacing=\"0\" border=\"0\"><tr>\n        <td><a href=\"${base}${q}&action=approve\" style=\"display:inline-block; background:#0a7d4f; color:#fff; padding:9px 16px; border-radius:6px; text-decoration:none; font-weight:600; font-size:14px;\">Approve</a></td>\n        <td style=\"padding:0 6px;\"></td>\n        <td><a href=\"${base}${q}&action=regenerate\" style=\"display:inline-block; background:#d97706; color:#fff; padding:9px 16px; border-radius:6px; text-decoration:none; font-weight:600; font-size:14px;\">Regenerate</a></td>\n        <td style=\"padding:0 6px;\"></td>\n        <td><a href=\"${base}${q}&action=skip\" style=\"display:inline-block; background:#6a737d; color:#fff; padding:9px 16px; border-radius:6px; text-decoration:none; font-weight:600; font-size:14px;\">Skip</a></td>\n      </tr></table>\n    </div>`;\n}).join('');\n\nconst wrapper = `<!doctype html><html><body style=\"margin:0; padding:24px; background:#f6f8fa; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; color:#24292e;\">\n  <div style=\"max-width:680px; margin:0 auto; background:#ffffff; border-radius:14px; padding:28px;\">\n    <p style=\"margin:0 0 14px; font-size:15px;\">Alright - fresh Klap run produced <strong>${clips.length}</strong> new clip${clips.length === 1 ? '' : 's'} for <em>${projName}</em>.</p>\n    <p style=\"margin:0 0 18px; font-size:15px;\">These are NEW selections from the same source video. Approve / Regenerate again / Skip per usual.</p>\n    ${items}\n    <p style=\"margin:24px 0 0; color:#6a737d; font-size:12px;\">Reply free-text if easier (\"approve 1, skip the rest\").</p>\n  </div>\n</body></html>`;\n\nreturn [{ json: {\n  email_html: wrapper,\n  video_title: projName,\n  clip_count: clips.length,\n}}];\n"
+      }
+    },
+    {
+      "name": "Gmail: Send Re-Review",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        2592,
+        0
+      ],
+      "parameters": {
+        "sendTo": "REPLACE_WITH_CLIENT_EMAIL",
+        "subject": "=[client-slug Shorts Re-Review] {{ $json.video_title }} - {{ $json.clip_count }} new clip{{ $json.clip_count === 1 ? '' : 's' }}",
+        "message": "={{ $json.email_html }}",
+        "options": {
+          "appendAttribution": false,
+          "senderName": "YCAT Shorts"
+        }
+      }
+    },
+    {
+      "name": "Log Approve → Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        2032,
+        -240
+      ],
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_SHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Sheet1"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "timestamp": "={{ $now.toISO() }}",
+            "source_type": "decision",
+            "youtube_url": "={{ $json.id ? 'https://www.youtube.com/watch?v=' + $json.id : '' }}",
+            "video_title": "={{ $('Prepare YouTube Upload Payload').item.json.title }}",
+            "from_address": "={{ $('Prepare YouTube Upload Payload').item.json.decision_source }}",
+            "raw_email_excerpt": "=approved → uploaded as private to client-slug",
+            "klap_task_id": "",
+            "klap_folder_id": "={{ $('Prepare YouTube Upload Payload').item.json.folder_id }}",
+            "status": "uploaded_private"
+          },
+          "schema": [
+            {
+              "id": "timestamp",
+              "displayName": "timestamp",
+              "type": "string",
+              "display": true,
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "source_type",
+              "displayName": "source_type",
+              "type": "string",
+              "display": true,
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "youtube_url",
+              "displayName": "youtube_url",
+              "type": "string",
+              "display": true,
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "video_title",
+              "displayName": "video_title",
+              "type": "string",
+              "display": true,
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "from_address",
+              "displayName": "from_address",
+              "type": "string",
+              "display": true,
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "raw_email_excerpt",
+              "displayName": "raw_email_excerpt",
+              "type": "string",
+              "display": true,
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "klap_task_id",
+              "displayName": "klap_task_id",
+              "type": "string",
+              "display": true,
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "klap_folder_id",
+              "displayName": "klap_folder_id",
+              "type": "string",
+              "display": true,
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "type": "string",
+              "display": true,
+              "canBeUsedToMatch": true
+            }
+          ],
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
+    },
+    {
+      "name": "Sheet: Lookup folder_id by clip_id",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        -48,
+        208
+      ],
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_SHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Sheet1"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "klap_task_id",
+              "lookupValue": "={{ $json.clip_id }}"
+            }
+          ]
+        },
+        "options": {
+          "returnFirstMatch": true
+        }
+      }
+    },
+    {
+      "name": "Enrich Decision with folder_id",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        192,
+        208
+      ],
+      "parameters": {
+        "jsCode": "// Map each lookup row back to its paired decision (n8n pairedItem auto-tracking).\nconst lookupRow = $input.first().json;\nconst decision = $('Parse Agent Decisions').item.json;\nreturn [{ json: {\n  ...decision,\n  folder_id: lookupRow.klap_folder_id || decision.folder_id || '',\n  _lookup_status: lookupRow.klap_folder_id ? 'resolved' : 'NOT_FOUND_in_sheet',\n}}];\n"
+      }
+    },
+    {
+      "name": "VEED: Add Subtitles",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1808,
+        -384
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://fal.run/veed/subtitles",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"video_url\": $('Klap: Export Status').item.json.src_url,\n  \"preset\": \"simple\",\n  \"language\": \"en\",\n  \"customization\": {\n    \"position\": \"center\",\n    \"shadow\": \"mid\",\n    \"text_customizations\": {\n      \"baseline\":    { \"font\": \"Montserrat\", \"weight\": 800, \"color\": \"#FFFFFF\" },\n      \"highlighted\": { \"font\": \"Montserrat\", \"weight\": 800, \"color\": \"#FFD700\" }\n    }\n  }\n}",
+        "options": {
+          "timeout": 300000
+        }
+      }
+    },
+    {
+      "name": "Download Captioned Video",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2032,
+        -384
+      ],
+      "parameters": {
+        "url": "={{ $json.video.url }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          },
+          "timeout": 120000
+        }
+      }
+    },
+    {
+      "name": "Sheet: Lookup URL by folder_id",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        480,
+        64
+      ],
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_SHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Sheet1"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "klap_folder_id",
+              "lookupValue": "={{ $json.folder_id }}"
+            }
+          ]
+        },
+        "options": {
+          "returnFirstMatch": true
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Webhook: client-slug-shorts-approve": {
+      "main": [
+        [
+          {
+            "node": "Decision from Magic Link",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Decision from Magic Link": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge Decisions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gmail: Client Reply (label:client:client-slug)": {
+      "main": [
+        [
+          {
+            "node": "Agent: Evaluate Client Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini Chat Model (for Agent)": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Agent: Evaluate Client Reply",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Agent: Evaluate Client Reply": {
+      "main": [
+        [
+          {
+            "node": "Parse Agent Decisions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Agent Decisions": {
+      "main": [
+        [
+          {
+            "node": "Sheet: Lookup folder_id by clip_id",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Decisions": {
+      "main": [
+        [
+          {
+            "node": "Switch on action",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch on action": {
+      "main": [
+        [
+          {
+            "node": "Klap: Export Clip",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Sheet: Lookup URL by folder_id",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Skip → Sheet (YCAT)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Klap: Export Clip": {
+      "main": [
+        [
+          {
+            "node": "Wait 30s (export)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 30s (export)": {
+      "main": [
+        [
+          {
+            "node": "Klap: Export Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Klap: Export Status": {
+      "main": [
+        [
+          {
+            "node": "IF: Export Ready?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF: Export Ready?": {
+      "main": [
+        [
+          {
+            "node": "Gemini: Generate Title + Desc + 3 Hashtags",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Wait 30s (export)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini: Generate Title + Desc + 3 Hashtags": {
+      "main": [
+        [
+          {
+            "node": "Prepare YouTube Upload Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare YouTube Upload Payload": {
+      "main": [
+        [
+          {
+            "node": "VEED: Add Subtitles",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "YouTube: Upload as Short (CLIENT)": {
+      "main": [
+        [
+          {
+            "node": "Log Approve → Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Regen Submit": {
+      "main": [
+        [
+          {
+            "node": "Klap: Resubmit Task (regen)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Klap: Resubmit Task (regen)": {
+      "main": [
+        [
+          {
+            "node": "Wait 1 min (regen)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 1 min (regen)": {
+      "main": [
+        [
+          {
+            "node": "Klap: Get Status (regen)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Klap: Get Status (regen)": {
+      "main": [
+        [
+          {
+            "node": "IF: Regen Status Ready?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF: Regen Status Ready?": {
+      "main": [
+        [
+          {
+            "node": "Klap: Get Shorts (regen)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Wait 1 min (regen)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Klap: Get Shorts (regen)": {
+      "main": [
+        [
+          {
+            "node": "Log Regen Shorts → Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Regen Shorts → Sheet": {
+      "main": [
+        [
+          {
+            "node": "Aggregate Regen Clips",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate Regen Clips": {
+      "main": [
+        [
+          {
+            "node": "Render Regen Clip HTML",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Render Regen Clip HTML": {
+      "main": [
+        [
+          {
+            "node": "Gmail: Send Re-Review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sheet: Lookup folder_id by clip_id": {
+      "main": [
+        [
+          {
+            "node": "Enrich Decision with folder_id",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enrich Decision with folder_id": {
+      "main": [
+        [
+          {
+            "node": "Merge Decisions",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "VEED: Add Subtitles": {
+      "main": [
+        [
+          {
+            "node": "Download Captioned Video",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download Captioned Video": {
+      "main": [
+        [
+          {
+            "node": "YouTube: Upload as Short (CLIENT)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sheet: Lookup URL by folder_id": {
+      "main": [
+        [
+          {
+            "node": "Prepare Regen Submit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "executionTimeout": 1800,
+    "saveExecutionProgress": true,
+    "binaryMode": "separate"
+  }
+}

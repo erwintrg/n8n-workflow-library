@@ -1,0 +1,554 @@
+{
+  "name": "Leads into GoHighLevel with no duplicates and no silent failures",
+  "nodes": [
+    {
+      "name": "Note: the problem",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -20,
+        -316
+      ],
+      "parameters": {
+        "content": "## What you asked for, in plain English\n\n1. Leads arrive from forms, Zapier and other systems, all shaped differently\n2. Someone has to get them into GoHighLevel without creating duplicates\n3. When a webhook fails nobody notices until a lead is already lost\n4. Troubleshooting means guessing, because nothing kept the payload\n5. Goal: one reliable path in, with a log you can actually check\n",
+        "height": 206,
+        "width": 592,
+        "color": 1
+      }
+    },
+    {
+      "name": "Note: my take",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -20,
+        800
+      ],
+      "parameters": {
+        "content": "## To go live, we wire\n\n- Webhooks refire on retries. Dedupe on a stable key first or you get two contacts for one lead.\n- Keep the payload and the response for every lead. Debugging an integration without them is guesswork.\n- Zapier charges per task, so a busy month gets pricey. The same map runs on n8n, happy either way.\n",
+        "height": 230,
+        "width": 640,
+        "color": 5
+      }
+    },
+    {
+      "name": "A lead hits your webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "lead-in",
+        "options": {},
+        "responseMode": "lastNode"
+      },
+      "notes": "form, Zapier or another system",
+      "notesInFlow": true
+    },
+    {
+      "name": "Make every source look the same",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        240,
+        0
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a1",
+              "name": "email",
+              "value": "={{ ($json.body.email || $json.body.Email || '').toLowerCase().trim() }}",
+              "type": "string"
+            },
+            {
+              "id": "a2",
+              "name": "phone",
+              "value": "={{ $json.body.phone || $json.body.Phone || '' }}",
+              "type": "string"
+            },
+            {
+              "id": "a3",
+              "name": "first_name",
+              "value": "={{ $json.body.first_name || ($json.body.name || '').split(' ')[0] || '' }}",
+              "type": "string"
+            },
+            {
+              "id": "a4",
+              "name": "last_name",
+              "value": "={{ $json.body.last_name || ($json.body.name || '').split(' ').slice(1).join(' ') || '' }}",
+              "type": "string"
+            },
+            {
+              "id": "a5",
+              "name": "source",
+              "value": "={{ $json.body.source || $json.headers['user-agent'] || 'webhook' }}",
+              "type": "string"
+            },
+            {
+              "id": "a6",
+              "name": "dedupe_key",
+              "value": "={{ ($json.body.id || $json.body.submission_id || (($json.body.email || '') + '|' + ($json.body.source || 'webhook'))).toString().toLowerCase() }}",
+              "type": "string"
+            },
+            {
+              "id": "a7",
+              "name": "raw",
+              "value": "={{ JSON.stringify($json.body) }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "notes": "one shape, one stable key",
+      "notesInFlow": true
+    },
+    {
+      "name": "Create or update the contact in GoHighLevel",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        0
+      ],
+      "parameters": {
+        "url": "https://services.leadconnectorhq.com/contacts/upsert",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true,
+              "fullResponse": true
+            }
+          }
+        },
+        "method": "POST",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Version",
+              "value": "2021-07-28"
+            },
+            {
+              "name": "Authorization",
+              "value": "Bearer [YOUR GHL PRIVATE INTEGRATION TOKEN]"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ locationId: '[YOUR GHL LOCATION ID]', email: $json.email, phone: $json.phone, firstName: $json.first_name, lastName: $json.last_name, source: $json.source, tags: ['inbound', $json.source], customFields: [{ key: 'dedupe_key', field_value: $json.dedupe_key }] }) }}"
+      },
+      "notes": "upsert, so one lead stays one contact",
+      "notesInFlow": true
+    },
+    {
+      "name": "Did GoHighLevel accept it?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        720,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.statusCode }}",
+              "rightValue": 299,
+              "operator": {
+                "type": "number",
+                "operation": "lte"
+              }
+            },
+            {
+              "id": "c2",
+              "leftValue": "={{ $json.body.contact.id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "exists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "notes": "anything but a yes gets flagged",
+      "notesInFlow": true
+    },
+    {
+      "name": "Flag it and keep the payload",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.3,
+      "position": [
+        720,
+        200
+      ],
+      "parameters": {
+        "otherOptions": {},
+        "resource": "message",
+        "operation": "post",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "=#integrations"
+        },
+        "text": "=GoHighLevel refused a lead.\nStatus: {{ $json.statusCode }}\nReason: {{ JSON.stringify($json.body).slice(0, 300) }}\nLead: {{ $('Make every source look the same').item.json.email }} from {{ $('Make every source look the same').item.json.source }}\nIt is on the Failed tab of the log and the replay will try it again within the hour."
+      }
+    },
+    {
+      "name": "Attach the details as a note",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        0
+      ],
+      "parameters": {
+        "url": "=https://services.leadconnectorhq.com/contacts/{{ $json.body.contact.id }}/notes",
+        "options": {},
+        "method": "POST",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Version",
+              "value": "2021-07-28"
+            },
+            {
+              "name": "Authorization",
+              "value": "Bearer [YOUR GHL PRIVATE INTEGRATION TOKEN]"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ userId: '[YOUR GHL USER ID]', body: 'Came in from ' + $('Make every source look the same').item.json.source + ' at ' + new Date().toISOString() + '\\n\\n' + $('Make every source look the same').item.json.raw }) }}"
+      },
+      "notes": "source, time and the full payload",
+      "notesInFlow": true
+    },
+    {
+      "name": "Open an opportunity in the right pipeline",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1200,
+        0
+      ],
+      "parameters": {
+        "url": "https://services.leadconnectorhq.com/opportunities/",
+        "options": {},
+        "method": "POST",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Version",
+              "value": "2021-07-28"
+            },
+            {
+              "name": "Authorization",
+              "value": "Bearer [YOUR GHL PRIVATE INTEGRATION TOKEN]"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ pipelineId: '[YOUR PIPELINE ID]', pipelineStageId: '[NEW LEAD STAGE ID]', locationId: '[YOUR GHL LOCATION ID]', contactId: $('Did GoHighLevel accept it?').item.json.body.contact.id, name: ($('Make every source look the same').item.json.first_name + ' ' + $('Make every source look the same').item.json.last_name).trim() + ' - ' + $('Make every source look the same').item.json.source, status: 'open' }) }}"
+      },
+      "notes": "new lead stage, ready for your team",
+      "notesInFlow": true
+    },
+    {
+      "name": "Log the payload and the answer",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1440,
+        0
+      ],
+      "parameters": {
+        "operation": "append",
+        "options": {},
+        "documentId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "",
+          "cachedResultName": "Integration log (pick your sheet)"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "list",
+          "value": "",
+          "cachedResultName": "Leads"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "when": "={{ new Date().toISOString() }}",
+            "source": "={{ $('Make every source look the same').item.json.source }}",
+            "email": "={{ $('Make every source look the same').item.json.email }}",
+            "dedupe_key": "={{ $('Make every source look the same').item.json.dedupe_key }}",
+            "ghl_contact_id": "={{ $('Did GoHighLevel accept it?').item.json.body.contact.id }}",
+            "status": "ok",
+            "payload": "={{ $('Make every source look the same').item.json.raw }}"
+          },
+          "matchingColumns": [],
+          "schema": []
+        }
+      },
+      "notes": "every lead, every response",
+      "notesInFlow": true
+    },
+    {
+      "name": "Every hour, look at what failed",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        420
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 1
+            }
+          ]
+        }
+      },
+      "notes": "the replay, so nothing is lost",
+      "notesInFlow": true
+    },
+    {
+      "name": "Read the failed rows from the log",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        240,
+        420
+      ],
+      "parameters": {
+        "operation": "read",
+        "options": {},
+        "documentId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "",
+          "cachedResultName": "Integration log (pick your sheet)"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "list",
+          "value": "",
+          "cachedResultName": "Failed"
+        },
+        "filtersUI": {}
+      },
+      "notes": "the ones GoHighLevel refused",
+      "notesInFlow": true
+    },
+    {
+      "name": "Only the ones tried less than three times",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [
+        480,
+        420
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "f1",
+              "leftValue": "={{ $json.attempts }}",
+              "rightValue": 3,
+              "operator": {
+                "type": "number",
+                "operation": "lt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "notes": "no endless loops",
+      "notesInFlow": true
+    },
+    {
+      "name": "Send them in again on the same key",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        420
+      ],
+      "parameters": {
+        "url": "https://services.leadconnectorhq.com/contacts/upsert",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true,
+              "fullResponse": true
+            }
+          }
+        },
+        "method": "POST",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Version",
+              "value": "2021-07-28"
+            },
+            {
+              "name": "Authorization",
+              "value": "Bearer [YOUR GHL PRIVATE INTEGRATION TOKEN]"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.payload }}"
+      },
+      "notes": "a retry can never duplicate",
+      "notesInFlow": true
+    }
+  ],
+  "connections": {
+    "A lead hits your webhook": {
+      "main": [
+        [
+          {
+            "node": "Make every source look the same",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Make every source look the same": {
+      "main": [
+        [
+          {
+            "node": "Create or update the contact in GoHighLevel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create or update the contact in GoHighLevel": {
+      "main": [
+        [
+          {
+            "node": "Did GoHighLevel accept it?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Did GoHighLevel accept it?": {
+      "main": [
+        [
+          {
+            "node": "Attach the details as a note",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Flag it and keep the payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Attach the details as a note": {
+      "main": [
+        [
+          {
+            "node": "Open an opportunity in the right pipeline",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Open an opportunity in the right pipeline": {
+      "main": [
+        [
+          {
+            "node": "Log the payload and the answer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Every hour, look at what failed": {
+      "main": [
+        [
+          {
+            "node": "Read the failed rows from the log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read the failed rows from the log": {
+      "main": [
+        [
+          {
+            "node": "Only the ones tried less than three times",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Only the ones tried less than three times": {
+      "main": [
+        [
+          {
+            "node": "Send them in again on the same key",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

@@ -1,0 +1,458 @@
+{
+  "name": "Voice agent calls into GoHighLevel with summary and recording",
+  "nodes": [
+    {
+      "name": "Note: the problem",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -20,
+        -316
+      ],
+      "parameters": {
+        "content": "## What you asked for, in plain English\n\n1. Your ElevenLabs agent makes and takes calls through Telnyx\n2. Short calls and wrong numbers should never reach your team\n3. A real conversation should become a lead by itself\n4. Your team needs the summary, the call length and the recording on the lead\n5. Goal: open Go High Level, see the lead, know the call without listening\n",
+        "height": 206,
+        "width": 599,
+        "color": 1
+      }
+    },
+    {
+      "name": "Note: my take",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -20,
+        380
+      ],
+      "parameters": {
+        "content": "## To go live, we wire\n\n- Judge a call on duration AND on what was said. Duration alone marks a long voicemail as a lead.\n- Keep the recording where the call lives and store only the link, so nothing gets duplicated.\n- Key every write on the call id. Webhooks retry, and a retry must not make a second lead.\n",
+        "height": 230,
+        "width": 640,
+        "color": 5
+      }
+    },
+    {
+      "name": "A call finishes on your ElevenLabs agent",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "elevenlabs-call-ended",
+        "options": {},
+        "responseMode": "lastNode"
+      },
+      "notes": "Telnyx hangs up, the webhook fires",
+      "notesInFlow": true
+    },
+    {
+      "name": "Pull out the number, the length and the recording",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        240,
+        0
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "b1",
+              "name": "call_id",
+              "value": "={{ $json.body.data.conversation_id }}",
+              "type": "string"
+            },
+            {
+              "id": "b2",
+              "name": "phone",
+              "value": "={{ $json.body.data.metadata.phone_call.external_number || $json.body.data.metadata.to_number }}",
+              "type": "string"
+            },
+            {
+              "id": "b3",
+              "name": "direction",
+              "value": "={{ $json.body.data.metadata.phone_call.direction || 'outbound' }}",
+              "type": "string"
+            },
+            {
+              "id": "b4",
+              "name": "duration_secs",
+              "value": "={{ $json.body.data.metadata.call_duration_secs }}",
+              "type": "number"
+            },
+            {
+              "id": "b5",
+              "name": "transcript",
+              "value": "={{ ($json.body.data.transcript || []).map(t => t.role + ': ' + t.message).join('\\n') }}",
+              "type": "string"
+            },
+            {
+              "id": "b6",
+              "name": "recording_url",
+              "value": "=https://api.elevenlabs.io/v1/convai/conversations/{{ $json.body.data.conversation_id }}/audio",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "notes": "one shape, keyed on the call id",
+      "notesInFlow": true
+    },
+    {
+      "name": "Was it a real conversation?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        480,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "d1",
+              "leftValue": "={{ $json.duration_secs }}",
+              "rightValue": 40,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            },
+            {
+              "id": "d2",
+              "leftValue": "={{ $json.transcript }}",
+              "rightValue": "user:",
+              "operator": {
+                "type": "string",
+                "operation": "contains"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "notes": "long enough and someone actually spoke",
+      "notesInFlow": true
+    },
+    {
+      "name": "Log the short ones and stop",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        480,
+        200
+      ],
+      "parameters": {
+        "operation": "append",
+        "options": {},
+        "documentId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "",
+          "cachedResultName": "Call log (pick your sheet)"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "list",
+          "value": "",
+          "cachedResultName": "Not a lead"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "call_id": "={{ $json.call_id }}",
+            "phone": "={{ $json.phone }}",
+            "duration_secs": "={{ $json.duration_secs }}",
+            "reason": "={{ $json.duration_secs < 40 ? 'too short' : 'nobody spoke' }}",
+            "recording": "={{ $json.recording_url }}"
+          },
+          "matchingColumns": [],
+          "schema": []
+        }
+      }
+    },
+    {
+      "name": "Read the call and score the lead",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.8,
+      "position": [
+        720,
+        0
+      ],
+      "parameters": {
+        "resource": "text",
+        "operation": "message",
+        "modelId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "gpt-4.1-mini",
+          "cachedResultName": "gpt-4.1-mini"
+        },
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You read transcripts of calls between an AI agent and a property owner for a real estate investment firm. Return strict JSON with these keys and nothing else: summary (4 sentences max, what the owner said, plain English), property (address or area if mentioned, else empty), motivation (why they would sell, else empty), timeline (how soon, else empty), price_expectation (what they said about price, else empty), qualified (true only if a real owner discussed a specific property and did not refuse), reason (one sentence, why qualified is true or false). Never invent a detail that is not in the transcript. Temperature is zero, be literal."
+            },
+            {
+              "role": "user",
+              "content": "=Call direction: {{ $('Pull out the number, the length and the recording').item.json.direction }}\nLength: {{ $('Pull out the number, the length and the recording').item.json.duration_secs }} seconds\n\nTranscript:\n{{ $('Pull out the number, the length and the recording').item.json.transcript }}"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0
+        },
+        "jsonOutput": true
+      },
+      "notes": "summary, motivation, timeline, qualified yes or no",
+      "notesInFlow": true
+    },
+    {
+      "name": "Create or update the lead in Go High Level",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        0
+      ],
+      "parameters": {
+        "url": "https://services.leadconnectorhq.com/contacts/upsert",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true,
+              "fullResponse": true
+            }
+          }
+        },
+        "method": "POST",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Version",
+              "value": "2021-07-28"
+            },
+            {
+              "name": "Authorization",
+              "value": "Bearer [YOUR GHL PRIVATE INTEGRATION TOKEN]"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ locationId: '[YOUR GHL LOCATION ID]', phone: $('Pull out the number, the length and the recording').item.json.phone, source: 'ElevenLabs voice agent', tags: ['voice agent', $json.message.content.qualified ? 'qualified' : 'needs review'], customFields: [ { key: 'call_id', field_value: $('Pull out the number, the length and the recording').item.json.call_id }, { key: 'call_duration_secs', field_value: String($('Pull out the number, the length and the recording').item.json.duration_secs) }, { key: 'call_recording', field_value: $('Pull out the number, the length and the recording').item.json.recording_url }, { key: 'seller_timeline', field_value: $json.message.content.timeline } ] }) }}"
+      },
+      "notes": "upsert on the phone number",
+      "notesInFlow": true
+    },
+    {
+      "name": "Attach the summary, the length and the recording",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1200,
+        0
+      ],
+      "parameters": {
+        "url": "=https://services.leadconnectorhq.com/contacts/{{ $json.body.contact.id }}/notes",
+        "options": {},
+        "method": "POST",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Version",
+              "value": "2021-07-28"
+            },
+            {
+              "name": "Authorization",
+              "value": "Bearer [YOUR GHL PRIVATE INTEGRATION TOKEN]"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ userId: '[YOUR GHL USER ID]', body: 'AI call summary\\n\\n' + $('Read the call and score the lead').item.json.message.content.summary + '\\n\\nProperty: ' + ($('Read the call and score the lead').item.json.message.content.property || 'not given') + '\\nMotivation: ' + ($('Read the call and score the lead').item.json.message.content.motivation || 'not given') + '\\nTimeline: ' + ($('Read the call and score the lead').item.json.message.content.timeline || 'not given') + '\\nPrice talk: ' + ($('Read the call and score the lead').item.json.message.content.price_expectation || 'not given') + '\\n\\nCall length: ' + $('Pull out the number, the length and the recording').item.json.duration_secs + ' seconds\\nRecording: ' + $('Pull out the number, the length and the recording').item.json.recording_url + '\\nCall id: ' + $('Pull out the number, the length and the recording').item.json.call_id }) }}"
+      },
+      "notes": "one note your team can read in ten seconds",
+      "notesInFlow": true
+    },
+    {
+      "name": "Open it in your pipeline",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1440,
+        0
+      ],
+      "parameters": {
+        "url": "https://services.leadconnectorhq.com/opportunities/",
+        "options": {},
+        "method": "POST",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Version",
+              "value": "2021-07-28"
+            },
+            {
+              "name": "Authorization",
+              "value": "Bearer [YOUR GHL PRIVATE INTEGRATION TOKEN]"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ pipelineId: '[YOUR PIPELINE ID]', pipelineStageId: $('Read the call and score the lead').item.json.message.content.qualified ? '[QUALIFIED STAGE ID]' : '[NEEDS REVIEW STAGE ID]', locationId: '[YOUR GHL LOCATION ID]', contactId: $('Create or update the lead in Go High Level').item.json.body.contact.id, name: 'Seller call - ' + $('Pull out the number, the length and the recording').item.json.phone, status: 'open' }) }}"
+      },
+      "notes": "new lead stage, ready to work",
+      "notesInFlow": true
+    },
+    {
+      "name": "Log every call so the numbers are checkable",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1680,
+        0
+      ],
+      "parameters": {
+        "operation": "append",
+        "options": {},
+        "documentId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "",
+          "cachedResultName": "Call log (pick your sheet)"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "list",
+          "value": "",
+          "cachedResultName": "Calls"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "when": "={{ new Date().toISOString() }}",
+            "call_id": "={{ $('Pull out the number, the length and the recording').item.json.call_id }}",
+            "phone": "={{ $('Pull out the number, the length and the recording').item.json.phone }}",
+            "direction": "={{ $('Pull out the number, the length and the recording').item.json.direction }}",
+            "duration_secs": "={{ $('Pull out the number, the length and the recording').item.json.duration_secs }}",
+            "qualified": "={{ $('Read the call and score the lead').item.json.message.content.qualified }}",
+            "why": "={{ $('Read the call and score the lead').item.json.message.content.reason }}",
+            "ghl_contact_id": "={{ $('Create or update the lead in Go High Level').item.json.body.contact.id }}",
+            "recording": "={{ $('Pull out the number, the length and the recording').item.json.recording_url }}"
+          },
+          "matchingColumns": [],
+          "schema": []
+        }
+      },
+      "notes": "calls, minutes, leads, per day",
+      "notesInFlow": true
+    }
+  ],
+  "connections": {
+    "A call finishes on your ElevenLabs agent": {
+      "main": [
+        [
+          {
+            "node": "Pull out the number, the length and the recording",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pull out the number, the length and the recording": {
+      "main": [
+        [
+          {
+            "node": "Was it a real conversation?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Was it a real conversation?": {
+      "main": [
+        [
+          {
+            "node": "Read the call and score the lead",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log the short ones and stop",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read the call and score the lead": {
+      "main": [
+        [
+          {
+            "node": "Create or update the lead in Go High Level",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create or update the lead in Go High Level": {
+      "main": [
+        [
+          {
+            "node": "Attach the summary, the length and the recording",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Attach the summary, the length and the recording": {
+      "main": [
+        [
+          {
+            "node": "Open it in your pipeline",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Open it in your pipeline": {
+      "main": [
+        [
+          {
+            "node": "Log every call so the numbers are checkable",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

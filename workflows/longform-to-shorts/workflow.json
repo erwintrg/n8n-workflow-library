@@ -1,0 +1,1039 @@
+{
+  "name": "YouTube long-form to Shorts (template)",
+  "nodes": [
+    {
+      "name": "Sticky: Template Header",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -816,
+        -816
+      ],
+      "parameters": {
+        "content": "## [YCAT/TEMPLATE] Long-Form to Shorts\n\n**This is the master template.** Save As Copy -> rename -> activate per client.\n\n### Pre-flight before activation (per client)\n\nSearch/replace these tokens to client-specific values:\n- `client-slug` -> client's short identifier (e.g. `acme`)\n- `REPLACE_WITH_CLIENT_YOUTUBE_CHANNEL_ID` -> their YouTube channel UC... ID\n- `REPLACE_WITH_CLIENT_EMAIL` -> their email address\n\nThen assign client's own credentials to every node:\n- Gmail trigger / send: client's Gmail OAuth\n- YouTube node: client's YouTube OAuth\n- Google Sheets: client's (or YCAT's) tracking sheet credential\n- Klap API key (httpHeaderAuth): client's Klap subscription\n- Gemini API key (httpHeaderAuth): client's Gemini key\n\n---\n\n### Routing (single shared inbox)\n\n- Clients email `shorts@example.com` (forwarded to YCAT Gmail).\n- Gmail filter auto-labels by FROM: `from:client@example.com → label client:acme`.\n- Each workflow copy's Gmail Trigger polls ONLY that client's label.\n- Strangers' emails match no label → no workflow sees them. Safe.\n- Belt-and-suspenders: a `Verify Sender` IF inside the workflow rejects unexpected senders.\n\n### Credentials owned by YCAT (set in template, never swap):\n- 🟢 Google Sheets - tracking sheet logging\n- 🟢 Gmail (your account) - sends review emails (client-slug self-test mode)\n\n### Per-client (set when copying):\n- 🟡 Gmail Trigger credential = YCAT Gmail (`you@example.com`)\n- 🟡 Gmail Trigger label filter: replace `client-slug` with this client's slug\n- 🟡 Verify Sender: replace expected from-address with this client's email\n- 🟡 YouTube Trigger credential = client's YouTube OAuth\n- 🟡 YouTube channel ID for schedule branch\n- 🟡 Klap credential = client's (or keep your own for testing)\n- 🟡 Review email recipient (Gmail node \"sendTo\") = client's email\n\n### Changelog\n- 2026-05-25 (Block 4): Loops swap → Gmail send node (self-test). For productized client version, TEMPLATE workflow keeps Loops support.",
+        "height": 600,
+        "width": 1320,
+        "color": 5
+      }
+    },
+    {
+      "name": "Manual Trigger (testing)",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -704,
+        -160
+      ],
+      "parameters": {}
+    },
+    {
+      "name": "Test Input (paste YT URL)",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -464,
+        -160
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "test-1",
+              "name": "youtube_url",
+              "value": "https://youtu.be/dQw4w9WgXcQ",
+              "type": "string"
+            },
+            {
+              "id": "test-2",
+              "name": "source_type",
+              "value": "manual",
+              "type": "string"
+            },
+            {
+              "id": "test-3",
+              "name": "raw_email",
+              "value": "",
+              "type": "string"
+            },
+            {
+              "id": "test-4",
+              "name": "from_address",
+              "value": "test@example.com",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "name": "Gmail: Client Inbound (label:client:client-slug)",
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -704,
+        64
+      ],
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "simple": false,
+        "filters": {
+          "q": "label:client:client-slug to:shorts@example.com (youtube.com OR youtu.be)",
+          "readStatus": "unread"
+        },
+        "options": {}
+      }
+    },
+    {
+      "name": "Verify Sender (REPLACE per client)",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -464,
+        64
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "vs-1",
+              "leftValue": "={{ $json.from }}",
+              "rightValue": "REPLACE_WITH_CLIENT_EMAIL",
+              "operator": {
+                "type": "string",
+                "operation": "contains",
+                "name": "filter.operator.contains"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "name": "Extract from Email",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -240,
+        64
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "em-1",
+              "name": "raw_email",
+              "value": "={{ ($json.text || $json.snippet || '').slice(0, 2000) }}",
+              "type": "string"
+            },
+            {
+              "id": "em-2",
+              "name": "from_address",
+              "value": "={{ $json.from }}",
+              "type": "string"
+            },
+            {
+              "id": "em-3",
+              "name": "source_type",
+              "value": "email",
+              "type": "string"
+            },
+            {
+              "id": "em-4",
+              "name": "message_id",
+              "value": "={{ $json.id || '' }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "name": "Schedule (every 1h)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -704,
+        320
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "YouTube: Get Latest from CLIENT Channel",
+      "type": "n8n-nodes-base.youTube",
+      "typeVersion": 1,
+      "position": [
+        -464,
+        320
+      ],
+      "parameters": {
+        "resource": "video",
+        "limit": 5,
+        "filters": {
+          "channelId": "REPLACE_WITH_CLIENT_YOUTUBE_CHANNEL_ID",
+          "publishedAfter": "={{ $now.minus({hours: 2}).toISO() }}"
+        },
+        "options": {}
+      }
+    },
+    {
+      "name": "Extract from Schedule",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -240,
+        320
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "sc-1",
+              "name": "youtube_url",
+              "value": "=https://www.youtube.com/watch?v={{ $json.id }}",
+              "type": "string"
+            },
+            {
+              "id": "sc-2",
+              "name": "video_title",
+              "value": "={{ $json.snippet.title }}",
+              "type": "string"
+            },
+            {
+              "id": "sc-3",
+              "name": "video_description",
+              "value": "={{ ($json.snippet.description || '').slice(0, 500) }}",
+              "type": "string"
+            },
+            {
+              "id": "sc-4",
+              "name": "source_type",
+              "value": "schedule",
+              "type": "string"
+            },
+            {
+              "id": "sc-5",
+              "name": "raw_email",
+              "value": "",
+              "type": "string"
+            },
+            {
+              "id": "sc-6",
+              "name": "from_address",
+              "value": "={{ $json.snippet.channelTitle }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "name": "Log Incoming → Sheet (YCAT)",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        48,
+        64
+      ],
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_SHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Sheet1"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "timestamp": "={{ $now.toISO() }}",
+            "source_type": "={{ $json.source_type }}",
+            "youtube_url": "={{ $json.youtube_url }}",
+            "video_title": "={{ $json.video_title || '' }}",
+            "from_address": "={{ $json.from_address || '' }}",
+            "raw_email_excerpt": "={{ ($json.raw_email || '').slice(0, 500) }}",
+            "klap_task_id": "",
+            "klap_folder_id": "",
+            "status": "received"
+          },
+          "schema": [
+            {
+              "id": "timestamp",
+              "displayName": "timestamp",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "source_type",
+              "displayName": "source_type",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "youtube_url",
+              "displayName": "youtube_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "video_title",
+              "displayName": "video_title",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "from_address",
+              "displayName": "from_address",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "raw_email_excerpt",
+              "displayName": "raw_email_excerpt",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "klap_task_id",
+              "displayName": "klap_task_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "klap_folder_id",
+              "displayName": "klap_folder_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
+    },
+    {
+      "name": "IF: Source = Email?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        272,
+        64
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "cond-1",
+              "leftValue": "={{ $json.source_type }}",
+              "rightValue": "email",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "name": "Gemini Parse Intent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        -48
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"contents\": [{\n    \"parts\": [{\n      \"text\": \"You are a parser. Extract the structured short-clip request from this client email body.\\n\\nRules:\\n- youtube_url: full URL (always required).\\n- max_clip_count: integer count of shorts requested. Omit if not stated.\\n- max_clip_duration: integer seconds. Parse \\\"under 45 seconds\\\", \\\"45s\\\", \\\"a minute\\\" (60), \\\"30 secs\\\" -> integer seconds. Omit if not stated.\\n- language: ISO 639-1 (en/es/fr/de). Omit if not stated.\\n- emojis: boolean. true if they want emojis in the captions, false if they say no emojis. Omit if not mentioned.\\n- intro_title: boolean. true if they want an intro title card on the clip. Omit if not mentioned.\\n- reframe: boolean. true to auto-reframe to vertical, false to keep original framing. Omit if not mentioned.\\n- remove_silences: boolean. true to cut silences/dead air. Omit if not mentioned.\\n- focus_intent: short phrase describing topics to favor. Omit if not stated.\\n- exclude_intent: short phrase describing topics to skip. Omit if not stated.\\n- notes: any other instructions. Omit if none.\\n\\nOMIT fields not explicitly stated. Do not invent values. (Caption styling is handled downstream by VEED, not here.)\\n\\n=== EMAIL FROM ===\\n\" + $json.from_address + \"\\n=== BODY ===\\n\" + $json.raw_email + \"\\n=== END ===\"\n    }]\n  }],\n  \"generationConfig\": {\n    \"responseMimeType\": \"application/json\",\n    \"responseJsonSchema\": {\n      \"type\": \"object\",\n      \"properties\": {\n        \"youtube_url\":       {\"type\": \"string\"},\n        \"language\":          {\"type\": \"string\"},\n        \"max_clip_count\":    {\"type\": \"integer\"},\n        \"max_clip_duration\": {\"type\": \"integer\"},\n        \"emojis\":            {\"type\": \"boolean\"},\n        \"intro_title\":       {\"type\": \"boolean\"},\n        \"reframe\":           {\"type\": \"boolean\"},\n        \"remove_silences\":   {\"type\": \"boolean\"},\n        \"focus_intent\":      {\"type\": \"string\"},\n        \"exclude_intent\":    {\"type\": \"string\"},\n        \"notes\":             {\"type\": \"string\"}\n      },\n      \"required\": [\"youtube_url\"]\n    },\n    \"temperature\": 0.0\n  }\n}",
+        "options": {}
+      }
+    },
+    {
+      "name": "Parse Gemini JSON",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        704,
+        -48
+      ],
+      "parameters": {
+        "jsCode": "const text = $input.first().json.candidates[0].content.parts[0].text;\nconst intent = JSON.parse(text);\nconst incoming = $('Extract from Email').first().json;\nreturn [{ json: {\n  ...incoming,\n  ...intent,\n  max_clip_count: intent.max_clip_count ?? 5,\n  max_clip_duration: intent.max_clip_duration ?? 60,\n  language: intent.language ?? 'en',\n  emojis: intent.emojis ?? false,\n  intro_title: intent.intro_title ?? false,\n  reframe: intent.reframe ?? true,\n  remove_silences: intent.remove_silences ?? true,\n}}];\n"
+      }
+    },
+    {
+      "name": "Apply Klap Defaults (non-email)",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        480,
+        160
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "kd-1",
+              "name": "max_clip_count",
+              "value": 5,
+              "type": "number"
+            },
+            {
+              "id": "kd-2",
+              "name": "max_clip_duration",
+              "value": 60,
+              "type": "number"
+            },
+            {
+              "id": "kd-3",
+              "name": "language",
+              "value": "en",
+              "type": "string"
+            },
+            {
+              "id": "kd-emojis",
+              "name": "emojis",
+              "value": false,
+              "type": "boolean"
+            },
+            {
+              "id": "kd-intro",
+              "name": "intro_title",
+              "value": false,
+              "type": "boolean"
+            },
+            {
+              "id": "kd-reframe",
+              "name": "reframe",
+              "value": true,
+              "type": "boolean"
+            },
+            {
+              "id": "kd-silence",
+              "name": "remove_silences",
+              "value": true,
+              "type": "boolean"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "name": "Klap: Submit Task",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        928,
+        64
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.klap.app/v2/tasks/video-to-shorts",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"source_video_url\": $json.youtube_url,\n  \"language\": $json.language || \"en\",\n  \"max_clip_count\": $json.max_clip_count || 5,\n  \"target_clip_count\": $json.max_clip_count || 5,\n  \"min_duration\": 15,\n  \"target_duration\": Math.min(($json.max_clip_duration || 60) - 15, 45),\n  \"max_duration\": $json.max_clip_duration || 60,\n  \"editing_options\": {\n    \"captions\": false,\n    \"emojis\": $json.emojis ?? false,\n    \"reframe\": $json.reframe ?? true,\n    \"remove_silences\": $json.remove_silences ?? true,\n    \"intro_title\": $json.intro_title ?? false\n  },\n  \"dimensions\": { \"width\": 1080, \"height\": 1920 }\n}",
+        "options": {}
+      }
+    },
+    {
+      "name": "Wait 1 min",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        1152,
+        64
+      ],
+      "parameters": {
+        "amount": 1,
+        "unit": "minutes"
+      }
+    },
+    {
+      "name": "Klap: Get Status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1360,
+        64
+      ],
+      "parameters": {
+        "url": "=https://api.klap.app/v2/tasks/{{ $('Klap: Submit Task').first().json.id }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      }
+    },
+    {
+      "name": "IF: Klap Status Ready?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1584,
+        64
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "cond-2",
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "ready",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "name": "Klap: Get Shorts",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1808,
+        -48
+      ],
+      "parameters": {
+        "url": "=https://api.klap.app/v2/projects/{{ $json.output_id }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      }
+    },
+    {
+      "name": "Log Shorts → Sheet (YCAT)",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        2032,
+        -48
+      ],
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "YOUR_SHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Sheet1"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "timestamp": "={{ $now.toISO() }}",
+            "source_type": "shorts_generated",
+            "youtube_url": "={{ $('Log Incoming → Sheet (YCAT)').first().json.youtube_url }}",
+            "video_title": "={{ $json.name }}",
+            "from_address": "",
+            "raw_email_excerpt": "={{ ($json.virality_score_explanation || '').slice(0, 500) }}",
+            "klap_task_id": "={{ $json.id }}",
+            "klap_folder_id": "={{ $json.folder_id }}",
+            "status": "=virality_score:{{ $json.virality_score }}"
+          },
+          "schema": [
+            {
+              "id": "timestamp",
+              "displayName": "timestamp",
+              "type": "string",
+              "display": true,
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "source_type",
+              "displayName": "source_type",
+              "type": "string",
+              "display": true,
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "youtube_url",
+              "displayName": "youtube_url",
+              "type": "string",
+              "display": true,
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "video_title",
+              "displayName": "video_title",
+              "type": "string",
+              "display": true,
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "from_address",
+              "displayName": "from_address",
+              "type": "string",
+              "display": true,
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "raw_email_excerpt",
+              "displayName": "raw_email_excerpt",
+              "type": "string",
+              "display": true,
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "klap_task_id",
+              "displayName": "klap_task_id",
+              "type": "string",
+              "display": true,
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "klap_folder_id",
+              "displayName": "klap_folder_id",
+              "type": "string",
+              "display": true,
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "type": "string",
+              "display": true,
+              "canBeUsedToMatch": true
+            }
+          ],
+          "matchingColumns": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
+    },
+    {
+      "name": "Aggregate Clips for Email",
+      "type": "n8n-nodes-base.aggregate",
+      "typeVersion": 1,
+      "position": [
+        2240,
+        -48
+      ],
+      "parameters": {
+        "aggregate": "aggregateAllItemData",
+        "options": {}
+      }
+    },
+    {
+      "name": "Render Clip List HTML",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2384,
+        -48
+      ],
+      "parameters": {
+        "jsCode": "const clips = $input.first().json.data;\nconst videoTitle = $('Klap: Get Status').first().json.name || 'your video';\nconst base = 'N8N_BASE_URL/webhook/client-slug-shorts-approve';\nconst items = clips.map(c => {\n  const q = `?clip=${c.id}&folder=${c.folder_id}`;\n  const score = c.virality_score ?? 'n/a';\n  const name = c.name || ('Clip ' + String(c.id).slice(0, 6));\n  return `\n    <div style=\"border:1px solid #e1e4e8; border-radius:10px; padding:16px; margin:14px 0; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;\">\n      <h3 style=\"margin:0 0 6px; font-size:16px;\">${name}</h3>\n      <p style=\"margin:0 0 10px; color:#586069; font-size:13px;\">Virality: <strong>${score}</strong></p>\n      <p style=\"margin:0 0 14px;\"><a href=\"https://klap.app/player/${c.id}\" target=\"_blank\" style=\"color:#0366d6; text-decoration:none;\">> Preview clip</a></p>\n      <table cellpadding=\"0\" cellspacing=\"0\" border=\"0\"><tr>\n        <td><a href=\"${base}${q}&action=approve\" style=\"display:inline-block; background:#0a7d4f; color:#fff; padding:9px 16px; border-radius:6px; text-decoration:none; font-weight:600; font-size:14px;\">Approve</a></td>\n        <td style=\"padding:0 6px;\"></td>\n        <td><a href=\"${base}${q}&action=regenerate\" style=\"display:inline-block; background:#d97706; color:#fff; padding:9px 16px; border-radius:6px; text-decoration:none; font-weight:600; font-size:14px;\">Regenerate</a></td>\n        <td style=\"padding:0 6px;\"></td>\n        <td><a href=\"${base}${q}&action=skip\" style=\"display:inline-block; background:#6a737d; color:#fff; padding:9px 16px; border-radius:6px; text-decoration:none; font-weight:600; font-size:14px;\">Skip</a></td>\n      </tr></table>\n    </div>`;\n}).join('');\n\nconst wrapper = `<!doctype html><html><body style=\"margin:0; padding:24px; background:#f6f8fa; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; color:#24292e;\">\n  <div style=\"max-width:680px; margin:0 auto; background:#ffffff; border-radius:14px; padding:28px;\">\n    <p style=\"margin:0 0 14px; font-size:15px;\">Alright - Klap just generated <strong>${clips.length}</strong> short clip${clips.length === 1 ? '' : 's'} from <em>${videoTitle}</em>.</p>\n    <p style=\"margin:0 0 18px; font-size:15px;\">Click a button on each card to Approve / Regenerate / Skip. Approvals go straight into the publish pipeline; Regenerate triggers a fresh Klap run; Skip just logs it.</p>\n    ${items}\n    <p style=\"margin:24px 0 0; color:#6a737d; font-size:12px;\">Or reply to this email with free text (e.g. \"approve clip 1 and 3, skip the rest\") - the Gemini agent will parse it.</p>\n  </div>\n</body></html>`;\n\nreturn [{ json: {\n  clip_list_html: items,\n  email_html: wrapper,\n  video_title: videoTitle,\n  client_slug: 'client-slug',\n  clip_count: clips.length,\n}}];\n"
+      }
+    },
+    {
+      "name": "Notify Client → Review (Gmail)",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        2592,
+        -48
+      ],
+      "parameters": {
+        "sendTo": "REPLACE_WITH_CLIENT_EMAIL",
+        "subject": "=[client-slug Shorts Review] {{ $json.video_title }} - {{ $json.clip_count }} clip{{ $json.clip_count === 1 ? '' : 's' }} ready",
+        "message": "={{ $json.email_html }}",
+        "options": {
+          "appendAttribution": false,
+          "senderName": "YCAT Shorts"
+        }
+      }
+    },
+    {
+      "name": "Sticky: Per-client onboarding (5 steps)",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -816,
+        544
+      ],
+      "parameters": {
+        "content": "## Per-client onboarding (5 minutes)\n\n1. **Gmail filter** in YCAT Gmail (`you@example.com`):\n   - Matches: `from:<client@email> to:shorts@example.com`\n   - Action: Apply label `client:<slug>`, Skip Inbox\n\n2. **Save As Copy** of this template → rename `[YCAT/<Client>] YT Long-Form to Shorts`\n\n3. **In the copy**, search/replace `client-slug` → client's slug (e.g. `acme`).\n   This affects: Gmail Trigger label filter, Notify Client URLs, webhook paths.\n\n4. **Wire credentials in the copy**:\n   - Gmail Trigger → assign YCAT Gmail OAuth credential (you create once)\n   - Verify Sender → set expected from-address to `client@example.com`\n   - YouTube node → assign client's YouTube OAuth credential\n   - Notify Client → replace `REPLACE_WITH_LOOPS_TEMPLATE_ID` (Loops review template ID)\n                   → replace `REPLACE_WITH_CLIENT_EMAIL` (client's email)\n   - (optional) Klap → swap to client's Klap key in production\n\n5. **Repeat for the approval workflow copy** (also has `client-slug` placeholders + a webhook path).\n\n6. **Activate both workflows.**\n\nStrangers can never trigger anything: their from-address won't match any Gmail filter, so no label is applied, so no workflow's Gmail Trigger sees the message.",
+        "height": 700,
+        "width": 1100,
+        "color": 4
+      }
+    },
+    {
+      "name": "Dedupe: Skip Already-Seen Videos",
+      "type": "n8n-nodes-base.removeDuplicates",
+      "typeVersion": 2,
+      "position": [
+        -48,
+        320
+      ],
+      "parameters": {
+        "operation": "removeItemsSeenInPreviousExecutions",
+        "dedupeValue": "={{ $json.youtube_url }}",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Manual Trigger (testing)": {
+      "main": [
+        [
+          {
+            "node": "Test Input (paste YT URL)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Test Input (paste YT URL)": {
+      "main": [
+        [
+          {
+            "node": "Log Incoming → Sheet (YCAT)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gmail: Client Inbound (label:client:client-slug)": {
+      "main": [
+        [
+          {
+            "node": "Verify Sender (REPLACE per client)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify Sender (REPLACE per client)": {
+      "main": [
+        [
+          {
+            "node": "Extract from Email",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Extract from Email": {
+      "main": [
+        [
+          {
+            "node": "Log Incoming → Sheet (YCAT)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule (every 1h)": {
+      "main": [
+        [
+          {
+            "node": "YouTube: Get Latest from CLIENT Channel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "YouTube: Get Latest from CLIENT Channel": {
+      "main": [
+        [
+          {
+            "node": "Extract from Schedule",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract from Schedule": {
+      "main": [
+        [
+          {
+            "node": "Dedupe: Skip Already-Seen Videos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Incoming → Sheet (YCAT)": {
+      "main": [
+        [
+          {
+            "node": "IF: Source = Email?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF: Source = Email?": {
+      "main": [
+        [
+          {
+            "node": "Gemini Parse Intent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Apply Klap Defaults (non-email)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini Parse Intent": {
+      "main": [
+        [
+          {
+            "node": "Parse Gemini JSON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Gemini JSON": {
+      "main": [
+        [
+          {
+            "node": "Klap: Submit Task",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Apply Klap Defaults (non-email)": {
+      "main": [
+        [
+          {
+            "node": "Klap: Submit Task",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Klap: Submit Task": {
+      "main": [
+        [
+          {
+            "node": "Wait 1 min",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait 1 min": {
+      "main": [
+        [
+          {
+            "node": "Klap: Get Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Klap: Get Status": {
+      "main": [
+        [
+          {
+            "node": "IF: Klap Status Ready?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF: Klap Status Ready?": {
+      "main": [
+        [
+          {
+            "node": "Klap: Get Shorts",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Wait 1 min",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Klap: Get Shorts": {
+      "main": [
+        [
+          {
+            "node": "Log Shorts → Sheet (YCAT)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Shorts → Sheet (YCAT)": {
+      "main": [
+        [
+          {
+            "node": "Aggregate Clips for Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate Clips for Email": {
+      "main": [
+        [
+          {
+            "node": "Render Clip List HTML",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Render Clip List HTML": {
+      "main": [
+        [
+          {
+            "node": "Notify Client → Review (Gmail)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dedupe: Skip Already-Seen Videos": {
+      "main": [
+        [
+          {
+            "node": "Log Incoming → Sheet (YCAT)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "executionTimeout": 1800,
+    "saveExecutionProgress": true
+  }
+}

@@ -1,0 +1,271 @@
+{
+  "name": "Typeform leads into HubSpot and email segments",
+  "nodes": [
+    {
+      "name": "Note: the problem",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -20,
+        -340
+      ],
+      "parameters": {
+        "content": "## What you told me, in plain English\n\n1. People fill out your Typeform\n2. Those leads are not landing in your HubSpot CRM properly\n3. You want them in the first stage of your pipeline\n4. That first stage kicks off the email segments you set up\n5. You do not have the time to wire it yourself\n6. More custom work may follow from here\n",
+        "height": 230,
+        "width": 473,
+        "color": 1
+      }
+    },
+    {
+      "name": "Note: my take",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -20,
+        380
+      ],
+      "parameters": {
+        "content": "## To go live, we wire\n\n- Your Typeform account and the form id, one credential and one dropdown in the first node\n- A HubSpot private app token with contacts, deals and lists rights, that is the only key I need\n- Your pipeline name and the list each email segment runs off, so people start on the right one\n",
+        "height": 230,
+        "width": 640,
+        "color": 5
+      }
+    },
+    {
+      "name": "Someone finishes your Typeform",
+      "type": "n8n-nodes-base.typeformTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "formId": "[YOUR TYPEFORM FORM ID]",
+        "simplifyAnswers": true,
+        "onlyAnswers": true
+      },
+      "notes": "no export, no copy and paste",
+      "notesInFlow": true
+    },
+    {
+      "name": "Their answers get mapped for HubSpot",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        0
+      ],
+      "parameters": {
+        "jsCode": "// One item per Typeform submission.\n// The keys on the left are YOUR question titles, the values are what HubSpot expects.\nconst SEGMENTS = {\n  '[ANSWER OPTION A]': '[HUBSPOT LIST ID A]',\n  '[ANSWER OPTION B]': '[HUBSPOT LIST ID B]',\n  '[ANSWER OPTION C]': '[HUBSPOT LIST ID C]'\n};\nconst DEFAULT_LIST = '[HUBSPOT LIST ID DEFAULT]';\n\nconst pick = (a, keys) => {\n  for (const k of keys) {\n    if (a[k] !== undefined && String(a[k]).trim() !== '') return String(a[k]).trim();\n  }\n  return '';\n};\n\nconst out = [];\nfor (const item of $input.all()) {\n  const a = item.json;\n  const email = pick(a, ['Email', 'Your email', 'What is your email address?']).toLowerCase();\n  const full = pick(a, ['Name', 'Your name', 'What is your name?']);\n  const parts = full.split(' ').filter(Boolean);\n  const interest = pick(a, ['[YOUR SEGMENT QUESTION TITLE]', 'What are you looking for?']);\n  const matched = Object.keys(SEGMENTS).find(k => interest.toLowerCase() === k.toLowerCase());\n  out.push({\n    json: {\n      email,\n      firstName: parts[0] || '',\n      lastName: parts.slice(1).join(' '),\n      phone: pick(a, ['Phone', 'Phone number', 'Your phone number']),\n      company: pick(a, ['Company', 'Company name', 'Your company']),\n      interest,\n      listId: matched ? SEGMENTS[matched] : DEFAULT_LIST,\n      raw: JSON.stringify(a),\n      submittedAt: new Date().toISOString()\n    }\n  });\n}\nreturn out;"
+      },
+      "notes": "name, email and which segment",
+      "notesInFlow": true
+    },
+    {
+      "name": "Did they leave a real email?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        480,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.email }}",
+              "rightValue": "@",
+              "operator": {
+                "type": "string",
+                "operation": "contains"
+              }
+            },
+            {
+              "id": "c2",
+              "leftValue": "={{ $json.email }}",
+              "rightValue": ".",
+              "operator": {
+                "type": "string",
+                "operation": "contains"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "notes": "yes carries on, no gets flagged",
+      "notesInFlow": true
+    },
+    {
+      "name": "You get a note about that one",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        480,
+        200
+      ],
+      "parameters": {
+        "sendTo": "[YOUR EMAIL]",
+        "subject": "=Typeform lead with no usable email",
+        "message": "=Someone finished the form but the email address cannot be used, so nothing was written to HubSpot.\n\nName: {{ $json.firstName }} {{ $json.lastName }}\nEmail as typed: {{ $json.email }}\nPhone: {{ $json.phone }}\nInterested in: {{ $json.interest }}\n\nEverything they answered:\n{{ $json.raw }}",
+        "options": {},
+        "resource": "message",
+        "operation": "send",
+        "emailType": "text"
+      },
+      "notes": "so no lead quietly disappears",
+      "notesInFlow": true
+    },
+    {
+      "name": "Contact created or updated in HubSpot",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2.1,
+      "position": [
+        720,
+        0
+      ],
+      "parameters": {
+        "resource": "contact",
+        "additionalFields": {
+          "firstName": "={{ $json.firstName }}",
+          "lastName": "={{ $json.lastName }}",
+          "phoneNumber": "={{ $json.phone }}",
+          "companyName": "={{ $json.company }}",
+          "lifeCycleStage": "lead",
+          "customPropertiesUi": {
+            "customPropertiesValues": [
+              {
+                "property": "hs_lead_status",
+                "value": "NEW"
+              }
+            ]
+          }
+        },
+        "authentication": "appToken",
+        "operation": "upsert",
+        "email": "={{ $json.email }}"
+      },
+      "notes": "matched on email, never a duplicate",
+      "notesInFlow": true
+    },
+    {
+      "name": "A deal opens in your first stage",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2.1,
+      "position": [
+        960,
+        0
+      ],
+      "parameters": {
+        "resource": "deal",
+        "additionalFields": {
+          "dealName": "=Typeform enquiry: {{ $('Their answers get mapped for HubSpot').item.json.firstName }} {{ $('Their answers get mapped for HubSpot').item.json.lastName }}",
+          "associatedVids": "={{ [$json.vid] }}",
+          "description": "=From the Typeform on {{ $('Their answers get mapped for HubSpot').item.json.submittedAt }}. Interested in: {{ $('Their answers get mapped for HubSpot').item.json.interest }}"
+        },
+        "authentication": "appToken",
+        "operation": "create",
+        "stage": "appointmentscheduled"
+      },
+      "notes": "your pipeline, stage one",
+      "notesInFlow": true
+    },
+    {
+      "name": "Added to the list your emails run off",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1200,
+        0
+      ],
+      "parameters": {
+        "url": "=https://api.hubapi.com/crm/v3/lists/{{ $('Their answers get mapped for HubSpot').item.json.listId }}/memberships/add",
+        "options": {},
+        "method": "PUT",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "hubspotAppToken",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify([ String($('Contact created or updated in HubSpot').item.json.vid) ]) }}"
+      },
+      "notes": "this is what starts the segment",
+      "notesInFlow": true
+    }
+  ],
+  "connections": {
+    "Someone finishes your Typeform": {
+      "main": [
+        [
+          {
+            "node": "Their answers get mapped for HubSpot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Their answers get mapped for HubSpot": {
+      "main": [
+        [
+          {
+            "node": "Did they leave a real email?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Did they leave a real email?": {
+      "main": [
+        [
+          {
+            "node": "Contact created or updated in HubSpot",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "You get a note about that one",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Contact created or updated in HubSpot": {
+      "main": [
+        [
+          {
+            "node": "A deal opens in your first stage",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "A deal opens in your first stage": {
+      "main": [
+        [
+          {
+            "node": "Added to the list your emails run off",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

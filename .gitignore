@@ -1,0 +1,15 @@
+# secrets and private inputs
+.env
+sanitize.config.json
+/raw/
+*.raw.json
+
+# notes for the author, never published
+REVIEW.md
+
+# python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/

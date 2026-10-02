@@ -1,0 +1,520 @@
+{
+  "name": "Vendor invoice intake and AP control (AccuLynx-ready)",
+  "nodes": [
+    {
+      "name": "Note: the problem",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -20,
+        -340
+      ],
+      "parameters": {
+        "content": "## What you asked for, in plain English\n\n1. Invoices from vendors and subs land in one email inbox\n2. Someone downloads each one and finds the right AccuLynx job\n3. Renames it, uploads it, types the fields into AccuLynx\n4. Checks the same invoice is not already in there\n5. Monthly statement arrives, every line gets ticked off\n6. Anything unclear is flagged for review, never guessed\n",
+        "height": 230,
+        "width": 494,
+        "color": 1
+      }
+    },
+    {
+      "name": "Note: my take",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -20,
+        800
+      ],
+      "parameters": {
+        "content": "## To go live, we wire\n\n- Whether your AccuLynx plan gives API access decides how much of this runs hands off.\n- Duplicates need a stable key: vendor plus invoice number, checked before entry, not after.\n- Quick win: one exceptions sheet with a reason column, so nothing waits in someone's inbox.\n",
+        "height": 230,
+        "width": 640,
+        "color": 5
+      }
+    },
+    {
+      "name": "New invoice lands in the AP inbox",
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "simple": false,
+        "filters": {
+          "q": "has:attachment -subject:(\"out of office\") -subject:(\"automatic reply\")",
+          "labelIds": [
+            "INBOX"
+          ]
+        },
+        "options": {
+          "downloadAttachments": true
+        }
+      },
+      "notes": "vendors and subs",
+      "notesInFlow": true
+    },
+    {
+      "name": "Read the invoice PDF",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        240,
+        0
+      ],
+      "parameters": {
+        "operation": "pdf",
+        "options": {},
+        "binaryPropertyName": "attachment_0"
+      },
+      "notes": "text off every page",
+      "notesInFlow": true
+    },
+    {
+      "name": "Pull out vendor, number, date and amount",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.8,
+      "position": [
+        480,
+        0
+      ],
+      "parameters": {
+        "resource": "text",
+        "operation": "message",
+        "modelId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "gpt-4.1-mini",
+          "cachedResultName": "gpt-4.1-mini"
+        },
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You read vendor and subcontractor invoices for a residential restoration and construction company. Return only what is actually printed on the document. Never guess a value. If a field is not clearly readable, return an empty string and lower the confidence. A credit memo is marked as a credit, not as a negative invoice."
+            },
+            {
+              "role": "user",
+              "content": "=Invoice text:\n{{ $json.text }}\n\nEmail subject: {{ $('New invoice lands in the AP inbox').item.json.subject }}\nFrom: {{ $('New invoice lands in the AP inbox').item.json.from.value[0].address }}\n\nReturn JSON with these keys: vendor_name, invoice_number, invoice_date (YYYY-MM-DD), amount (number), is_credit (true or false), job_hint (any job name, property address, PO number or claim number printed on the invoice, empty string when there is none), confidence (0 to 1, how sure you are of the fields you filled)."
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0
+        },
+        "jsonOutput": true
+      },
+      "notes": "blank when it is not printed",
+      "notesInFlow": true
+    },
+    {
+      "name": "Check your job list and what is already entered",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        720,
+        0
+      ],
+      "parameters": {
+        "operation": "read",
+        "options": {},
+        "documentId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "",
+          "cachedResultName": "AP control sheet (pick your sheet)"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "list",
+          "value": "",
+          "cachedResultName": "Jobs and invoices"
+        },
+        "filtersUI": {}
+      },
+      "notes": "open jobs and the invoice log",
+      "notesInFlow": true
+    },
+    {
+      "name": "Match the job, catch duplicates",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        960,
+        0
+      ],
+      "parameters": {
+        "jsCode": "// One pass per invoice: find the AccuLynx job, then make sure this invoice has not been through here before.\nconst inv = $('Pull out vendor, number, date and amount').first().json.message.content;\nconst rows = $('Check your job list and what is already entered').all().map(i => i.json);\n\nconst jobs = rows.filter(r => String(r.Type).toLowerCase() === 'job');\nconst entered = rows.filter(r => String(r.Type).toLowerCase() === 'invoice');\n\nconst norm = s => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');\nconst key = norm(inv.vendor_name) + '|' + norm(inv.invoice_number);\n\n// Duplicates are checked on a stable key, plus amount and date for vendors who reuse invoice numbers.\nconst duplicate = entered.find(r =>\n  (norm(r.Vendor) + '|' + norm(r.InvoiceNumber)) === key ||\n  (norm(r.Vendor) === norm(inv.vendor_name) && Number(r.Amount) === Number(inv.amount) && r.InvoiceDate === inv.invoice_date)\n);\n\n// Job match runs on whatever the invoice prints: job name, property address, PO or claim number.\nconst hint = norm(inv.job_hint);\nlet match = null, best = 0, runnerUp = null;\nfor (const j of jobs) {\n  for (const f of [j.JobName, j.Address, j.PONumber, j.ClaimNumber].map(norm)) {\n    if (!f || !hint) continue;\n    if ((hint.includes(f) || f.includes(hint)) && f.length > best) { runnerUp = match; best = f.length; match = j; }\n  }\n}\n\nconst confident = !duplicate && match && best >= 8 && (inv.confidence ?? 0) >= 0.7;\nconst reason = duplicate\n  ? 'Looks like a duplicate of invoice ' + duplicate.InvoiceNumber + ' already entered on ' + duplicate.JobName\n  : !match\n    ? 'Nothing on the job list matches \"' + (inv.job_hint || 'no job reference printed on the invoice') + '\"'\n    : !confident\n      ? 'Weak match to ' + match.JobName + (runnerUp ? ', could also be ' + runnerUp.JobName : '')\n      : '';\n\n// [PLACEHOLDER] your naming convention. Send me one example filename and I swap the order here.\nconst filename = [inv.invoice_date, inv.vendor_name, inv.invoice_number]\n  .filter(Boolean).join('_').replace(/[^\\w.-]/g, '-') + '.pdf';\n\nreturn [{ json: { ...inv, job_id: match ? match.JobID : '', job_name: match ? match.JobName : '', confident, duplicate: Boolean(duplicate), reason, filename } }];"
+      },
+      "notes": "vendor plus invoice number",
+      "notesInFlow": true
+    },
+    {
+      "name": "Certain which job it belongs to?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1200,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.confident }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "notes": "no guessing, ever",
+      "notesInFlow": true
+    },
+    {
+      "name": "Onto your exceptions list",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1200,
+        200
+      ],
+      "parameters": {
+        "operation": "append",
+        "options": {},
+        "documentId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "",
+          "cachedResultName": "AP control sheet (pick your sheet)"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "list",
+          "value": "",
+          "cachedResultName": "Exceptions"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": []
+        }
+      },
+      "notes": "with the reason next to it",
+      "notesInFlow": true
+    },
+    {
+      "name": "Renamed and filed on the job",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        1440,
+        0
+      ],
+      "parameters": {
+        "options": {},
+        "resource": "file",
+        "operation": "upload",
+        "name": "={{ $json.filename }}",
+        "driveId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "My Drive"
+        },
+        "folderId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "",
+          "cachedResultName": "Job files (pick your folder)"
+        },
+        "inputDataFieldName": "attachment_0"
+      },
+      "notes": "your naming convention",
+      "notesInFlow": true
+    },
+    {
+      "name": "Ready to enter, every field checked",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1680,
+        0
+      ],
+      "parameters": {
+        "operation": "append",
+        "options": {},
+        "documentId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "",
+          "cachedResultName": "AP control sheet (pick your sheet)"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "list",
+          "value": "",
+          "cachedResultName": "Invoice register"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": []
+        }
+      },
+      "notes": "one row per invoice",
+      "notesInFlow": true
+    },
+    {
+      "name": "You drop in a vendor statement",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.4,
+      "position": [
+        0,
+        420
+      ],
+      "parameters": {
+        "formTitle": "Vendor statement check",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "Vendor",
+              "fieldType": "text",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Statement month",
+              "fieldType": "text"
+            },
+            {
+              "fieldLabel": "Statement total",
+              "fieldType": "number"
+            },
+            {
+              "fieldLabel": "Statement lines",
+              "fieldType": "textarea",
+              "requiredField": true,
+              "placeholder": "One line per invoice: invoice number, date, amount"
+            }
+          ]
+        },
+        "options": {},
+        "formDescription": "Paste the statement lines and see what is missing before the statement is paid."
+      },
+      "notes": "before it gets paid",
+      "notesInFlow": true
+    },
+    {
+      "name": "Pull that vendor out of the register",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        240,
+        420
+      ],
+      "parameters": {
+        "operation": "read",
+        "options": {},
+        "documentId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "",
+          "cachedResultName": "AP control sheet (pick your sheet)"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "list",
+          "value": "",
+          "cachedResultName": "Invoice register"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "Vendor",
+              "lookupValue": "={{ $('You drop in a vendor statement').item.json.Vendor }}"
+            }
+          ]
+        }
+      },
+      "notes": "everything entered so far",
+      "notesInFlow": true
+    },
+    {
+      "name": "Tick every line off against AccuLynx",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        420
+      ],
+      "parameters": {
+        "jsCode": "// Reconciliation is arithmetic, not a language job, so this runs in code and gives the same answer every time.\nconst form = $('You drop in a vendor statement').first().json;\nconst entered = $input.all().map(i => i.json);\n\nconst norm = s => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');\nconst money = s => Number(String(s).replace(/[^0-9.-]/g, '')) || 0;\n\n// Each pasted line: invoice number, date, amount. Credits come through negative or marked CR.\nconst lines = String(form['Statement lines']).split('\\n').map(l => l.trim()).filter(Boolean).map(l => {\n  const parts = l.split(/[,\\t;]+/).map(p => p.trim());\n  const amount = money(parts[parts.length - 1]);\n  return { raw: l, number: parts[0], date: parts[1] || '', amount, is_credit: /cr|credit/i.test(l) || amount < 0 };\n});\n\nconst findings = [];\nlet accounted = 0;\n\nfor (const line of lines) {\n  const hits = entered.filter(r => norm(r.InvoiceNumber) === norm(line.number));\n  if (hits.length === 0) {\n    findings.push({ issue: line.is_credit ? 'Missing credit' : 'Missing invoice', invoice: line.number, statement_amount: line.amount, note: 'On the statement, not in AccuLynx' });\n  } else if (hits.length > 1) {\n    findings.push({ issue: 'Duplicate invoice', invoice: line.number, statement_amount: line.amount, note: 'Entered ' + hits.length + ' times, on ' + hits.map(h => h.JobName).join(' and ') });\n  } else if (Math.abs(money(hits[0].Amount) - line.amount) > 0.01) {\n    findings.push({ issue: 'Incorrect amount', invoice: line.number, statement_amount: line.amount, note: 'AccuLynx has ' + hits[0].Amount });\n  } else if (!hits[0].JobName) {\n    findings.push({ issue: 'Not matched to a job', invoice: line.number, statement_amount: line.amount, note: 'Entered but sitting without a job' });\n  } else {\n    accounted += 1;\n  }\n}\n\nconst lineTotal = lines.reduce((a, l) => a + l.amount, 0);\nconst stated = money(form['Statement total']);\nif (stated && Math.abs(stated - lineTotal) > 0.01) {\n  findings.push({ issue: 'Statement does not reconcile', invoice: '', statement_amount: stated, note: 'Lines add up to ' + lineTotal.toFixed(2) });\n}\n\nreturn [{ json: {\n  vendor: form.Vendor,\n  month: form['Statement month'] || '',\n  lines_on_statement: lines.length,\n  accounted_for: accounted,\n  findings,\n  clear_to_pay: findings.length === 0,\n  summary: findings.length === 0\n    ? 'All ' + lines.length + ' lines are in AccuLynx on the right jobs.'\n    : accounted + ' of ' + lines.length + ' lines check out. ' + findings.length + ' need a look before you pay.'\n} }];"
+      },
+      "notes": "missing, doubled, wrong job",
+      "notesInFlow": true
+    },
+    {
+      "name": "Your discrepancy list, before you pay",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        720,
+        420
+      ],
+      "parameters": {
+        "sendTo": "[PLACEHOLDER: your AP manager]",
+        "subject": "=Statement check: {{ $json.vendor }} {{ $json.month }}",
+        "message": "={{ $json.summary }}\n\n{{ $json.findings.map(f => '- ' + f.issue + ' ' + f.invoice + ' (' + f.statement_amount + '): ' + f.note).join('\\n') }}\n\nNothing here was changed in AccuLynx. This is a read only check.",
+        "options": {},
+        "resource": "message",
+        "operation": "send",
+        "emailType": "text"
+      },
+      "notes": "one email, every mismatch",
+      "notesInFlow": true
+    }
+  ],
+  "connections": {
+    "New invoice lands in the AP inbox": {
+      "main": [
+        [
+          {
+            "node": "Read the invoice PDF",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read the invoice PDF": {
+      "main": [
+        [
+          {
+            "node": "Pull out vendor, number, date and amount",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pull out vendor, number, date and amount": {
+      "main": [
+        [
+          {
+            "node": "Check your job list and what is already entered",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check your job list and what is already entered": {
+      "main": [
+        [
+          {
+            "node": "Match the job, catch duplicates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Match the job, catch duplicates": {
+      "main": [
+        [
+          {
+            "node": "Certain which job it belongs to?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Certain which job it belongs to?": {
+      "main": [
+        [
+          {
+            "node": "Renamed and filed on the job",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Onto your exceptions list",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Renamed and filed on the job": {
+      "main": [
+        [
+          {
+            "node": "Ready to enter, every field checked",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "You drop in a vendor statement": {
+      "main": [
+        [
+          {
+            "node": "Pull that vendor out of the register",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pull that vendor out of the register": {
+      "main": [
+        [
+          {
+            "node": "Tick every line off against AccuLynx",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tick every line off against AccuLynx": {
+      "main": [
+        [
+          {
+            "node": "Your discrepancy list, before you pay",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

@@ -1,0 +1,414 @@
+{
+  "name": "Price monitoring with Telegram and email alerts",
+  "nodes": [
+    {
+      "name": "Note: the problem",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -16,
+        -336
+      ],
+      "parameters": {
+        "content": "## What you told me, in plain English\n\n1. You follow the same products across several online stores\n2. You want to find a product and mark it for tracking\n3. Something checks those prices for you, on a schedule\n4. A price drop reaches your phone and your inbox\n5. A simple page to add and manage products, no design work\n6. Stable and boring, almost no involvement from you\n",
+        "height": 230,
+        "width": 480
+      }
+    },
+    {
+      "name": "Note: my take",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -16,
+        464
+      ],
+      "parameters": {
+        "content": "## To go live, we wire\n\n- The stores you buy from, your Telegram chat and the inbox that gets the alert\n- Telegram is instant and free; WhatsApp can only message you first with an approved template\n- A store that hides its price in JavaScript needs its own small rule, that is the usual half day\n",
+        "height": 206,
+        "width": 640,
+        "color": 5
+      }
+    },
+    {
+      "name": "Every six hours your list is checked",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      },
+      "notes": "how often is a setting",
+      "notesInFlow": true
+    },
+    {
+      "name": "Your tracked products are read",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        240,
+        0
+      ],
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "",
+          "cachedResultName": "Price watchlist (pick your sheet)"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "list",
+          "value": "",
+          "cachedResultName": "Watchlist"
+        }
+      },
+      "notes": "product, store link, target price",
+      "notesInFlow": true
+    },
+    {
+      "name": "The store page is fetched",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        0
+      ],
+      "parameters": {
+        "url": "={{ $json.url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "User-Agent",
+              "value": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            },
+            {
+              "name": "Accept-Language",
+              "value": "pt-PT,pt;q=0.9,en;q=0.8"
+            }
+          ]
+        },
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 2000
+            }
+          },
+          "response": {
+            "response": {
+              "neverError": true,
+              "responseFormat": "text"
+            }
+          },
+          "timeout": 20000
+        }
+      },
+      "notes": "one polite request per product",
+      "notesInFlow": true
+    },
+    {
+      "name": "Price read from the page",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        0
+      ],
+      "parameters": {
+        "jsCode": "// One item per tracked product: pull today's price out of the page, compare it with the last one.\nconst out = [];\nfor (const item of $input.all()) {\n  const html = String(item.json.data || '');\n  const row = $('Your tracked products are read').item.json;\n  let price = null;\n\n  // Most shops publish the price in a schema.org block in the page source. Same parser for every store.\n  for (const m of html.matchAll(/<script[^>]*application\\/ld\\+json[^>]*>([\\s\\S]*?)<\\/script>/g)) {\n    try {\n      const blocks = [].concat(JSON.parse(m[1].trim()));\n      for (const b of blocks) {\n        const offer = [].concat(b.offers || [])[0];\n        if (offer && offer.price) price = Number(String(offer.price).replace(/[^0-9.,]/g, '').replace(',', '.'));\n      }\n    } catch (e) { /* not the block we are after, keep looking */ }\n  }\n\n  // Fallback for shops without it. A shop that hides the price behind JavaScript gets its own rule here.\n  if (price === null) {\n    const meta = html.match(/itemprop=[\"']price[\"'][^>]*content=[\"']([0-9.,]+)[\"']/i)\n      || html.match(/property=[\"']product:price:amount[\"'][^>]*content=[\"']([0-9.,]+)[\"']/i);\n    if (meta) price = Number(meta[1].replace(',', '.'));\n  }\n\n  const last = Number(row.last_price || 0);\n  const target = Number(row.target_price || 0);\n  out.push({ json: {\n    product: row.product,\n    store: row.store,\n    url: row.url,\n    price,\n    last_price: last || price,\n    target_price: target,\n    dropped: price !== null && last > 0 && price < last,\n    hit_target: price !== null && target > 0 && price <= target,\n    unreadable: price === null,\n    checked_at: $now.toFormat('yyyy-MM-dd HH:mm')\n  }});\n}\nreturn out;"
+      },
+      "notes": "reads the price from the page",
+      "notesInFlow": true
+    },
+    {
+      "name": "The new price goes on your list",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        960,
+        0
+      ],
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "",
+          "cachedResultName": "Price watchlist (pick your sheet)"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "list",
+          "value": "",
+          "cachedResultName": "Watchlist"
+        }
+      },
+      "notes": "price and time, every check",
+      "notesInFlow": true
+    },
+    {
+      "name": "Cheaper than last time?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1200,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $('Price read from the page').item.json.dropped }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "notes": "only a real drop alerts you",
+      "notesInFlow": true
+    },
+    {
+      "name": "Telegram pings your phone",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1440,
+        0
+      ],
+      "parameters": {
+        "chatId": "[YOUR TELEGRAM CHAT ID]",
+        "text": "=Price drop on {{ $('Price read from the page').item.json.product }}\n\nNow {{ $('Price read from the page').item.json.price }} at {{ $('Price read from the page').item.json.store }}, before it was {{ $('Price read from the page').item.json.last_price }}.\n{{ $('Price read from the page').item.json.hit_target ? 'That is under the price you set.' : '' }}\n\n{{ $('Price read from the page').item.json.url }}",
+        "additionalFields": {
+          "appendAttribution": false,
+          "disable_web_page_preview": false
+        }
+      },
+      "notes": "old price, new price, link",
+      "notesInFlow": true
+    },
+    {
+      "name": "And the same alert by email",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1680,
+        0
+      ],
+      "parameters": {
+        "sendTo": "[YOUR EMAIL]",
+        "subject": "=Price drop: {{ $('Price read from the page').item.json.product }} is now {{ $('Price read from the page').item.json.price }}",
+        "emailType": "text",
+        "message": "={{ $('Price read from the page').item.json.product }} dropped at {{ $('Price read from the page').item.json.store }}.\n\nBefore: {{ $('Price read from the page').item.json.last_price }}\nNow: {{ $('Price read from the page').item.json.price }}\nYour target: {{ $('Price read from the page').item.json.target_price }}\n\nOpen the product: {{ $('Price read from the page').item.json.url }}\nChecked {{ $('Price read from the page').item.json.checked_at }}.",
+        "options": {}
+      },
+      "notes": "same alert, in your inbox",
+      "notesInFlow": true
+    },
+    {
+      "name": "You add a product on a simple page",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.4,
+      "position": [
+        0,
+        240
+      ],
+      "parameters": {
+        "formTitle": "Track a product",
+        "formDescription": "Paste the links of the product you want watched, one per line. You get a message the moment one of them drops.",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "What is it?",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Product links, one per line",
+              "fieldType": "textarea",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Tell me when it drops below",
+              "fieldType": "number"
+            }
+          ]
+        },
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "notes": "your page, no design work",
+      "notesInFlow": true
+    },
+    {
+      "name": "Each link gets its own row",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        240
+      ],
+      "parameters": {
+        "jsCode": "// The same product in four stores becomes four rows, so each one is checked on its own.\nconst rows = [];\nfor (const item of $input.all()) {\n  const product = item.json['What is it?'];\n  const target = item.json['Tell me when it drops below'] || '';\n  const links = String(item.json['Product links, one per line'] || '')\n    .split('\\n').map(l => l.trim()).filter(Boolean);\n  for (const url of links) {\n    let store = '';\n    try { store = new URL(url).hostname.replace(/^www\\./, ''); } catch (e) { continue; }\n    rows.push({ json: { product, store, url, target_price: target, last_price: '', last_checked: '', status: 'new' } });\n  }\n}\nreturn rows;"
+      },
+      "notes": "one product, several stores",
+      "notesInFlow": true
+    },
+    {
+      "name": "It lands on your watchlist",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        480,
+        240
+      ],
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "",
+          "cachedResultName": "Price watchlist (pick your sheet)"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "list",
+          "value": "",
+          "cachedResultName": "Watchlist"
+        }
+      },
+      "notes": "picked up on the next check",
+      "notesInFlow": true
+    }
+  ],
+  "connections": {
+    "Every six hours your list is checked": {
+      "main": [
+        [
+          {
+            "node": "Your tracked products are read",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Your tracked products are read": {
+      "main": [
+        [
+          {
+            "node": "The store page is fetched",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "The store page is fetched": {
+      "main": [
+        [
+          {
+            "node": "Price read from the page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Price read from the page": {
+      "main": [
+        [
+          {
+            "node": "The new price goes on your list",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "The new price goes on your list": {
+      "main": [
+        [
+          {
+            "node": "Cheaper than last time?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cheaper than last time?": {
+      "main": [
+        [
+          {
+            "node": "Telegram pings your phone",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram pings your phone": {
+      "main": [
+        [
+          {
+            "node": "And the same alert by email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "You add a product on a simple page": {
+      "main": [
+        [
+          {
+            "node": "Each link gets its own row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Each link gets its own row": {
+      "main": [
+        [
+          {
+            "node": "It lands on your watchlist",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  }
+}

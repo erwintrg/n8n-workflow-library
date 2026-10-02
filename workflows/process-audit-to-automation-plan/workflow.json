@@ -1,0 +1,468 @@
+{
+  "name": "Process audit to automation plan",
+  "nodes": [
+    {
+      "name": "Note: the problem",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -20,
+        -340
+      ],
+      "parameters": {
+        "content": "## What you asked for, in plain English\n\n1. A new US client sends notes, an SOP or a scan\n2. Someone reads it and writes out every step by hand\n3. You judge what is repetitive and what can be automated\n4. Hours saved and ROI get worked out in a sheet\n5. The plan is retyped into a document for the client\n6. Same job again for the next client project\n",
+        "height": 230,
+        "width": 459,
+        "color": 1
+      }
+    },
+    {
+      "name": "Note: my take",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -20,
+        380
+      ],
+      "parameters": {
+        "content": "## To go live, we wire\n\n- Your Google account, the Docs template and the tracker sheet you already use\n- Your blended hourly rate, so the hours and cost saved are your numbers not mine\n- Slack or email for the review ping, five minute swap either way\n",
+        "height": 158,
+        "width": 627,
+        "color": 5
+      }
+    },
+    {
+      "name": "A client process lands in your intake form",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.4,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "formTitle": "Process audit intake",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "Client company",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Process name",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Who does it today",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "How often",
+              "fieldType": "dropdown",
+              "fieldOptions": {
+                "values": [
+                  {
+                    "option": "many times a day"
+                  },
+                  {
+                    "option": "daily"
+                  },
+                  {
+                    "option": "a few times a week"
+                  },
+                  {
+                    "option": "weekly"
+                  },
+                  {
+                    "option": "monthly"
+                  }
+                ]
+              },
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Tools they use",
+              "placeholder": "CRM, ERP, email, spreadsheets"
+            },
+            {
+              "fieldLabel": "What goes wrong today",
+              "fieldType": "textarea"
+            },
+            {
+              "fieldLabel": "SOP, call notes or scan",
+              "fieldType": "file",
+              "multipleFiles": false,
+              "acceptFileTypes": ".pdf,.docx,.png,.jpg"
+            }
+          ]
+        },
+        "options": {},
+        "formDescription": "One process per submission. Attach the SOP, the call notes or a scan."
+      },
+      "notes": "or you fill it after the call",
+      "notesInFlow": true
+    },
+    {
+      "name": "Their SOP or call notes get read, scans included",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        240,
+        0
+      ],
+      "parameters": {
+        "operation": "pdf",
+        "options": {},
+        "binaryPropertyName": "SOP_call_notes_or_scan"
+      },
+      "notes": "PDF now, OCR for scans",
+      "notesInFlow": true
+    },
+    {
+      "name": "AI writes out the process step by step",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.8,
+      "position": [
+        480,
+        0
+      ],
+      "parameters": {
+        "resource": "text",
+        "operation": "message",
+        "modelId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "gpt-4.1"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "You are a process analyst for an automation agency. Read the intake and the attached document and return the process as strict JSON, no prose.\n\nShape: {\"company\": string, \"process\": string, \"steps\": [{\"step\": string, \"owner\": string, \"per_month\": number, \"minutes\": number, \"kind\": \"manual\" | \"rule_based\" | \"judgement\", \"tools\": [string], \"automatable\": \"yes\" | \"partly\" | \"no\", \"how\": string, \"confidence\": number}]}\n\nRules: per_month is how many times that step runs in a month, derived from \"How often\". minutes is the hands-on time for one run, and if the notes do not say, estimate from the step itself and drop confidence below 0.6. kind is judgement only when a person weighs something that is not written down anywhere. how is one sentence naming the tool that would do it (n8n, an API, OCR, the CRM). Never invent a step that is not in the material.\n\nIntake:\nCompany: {{ $('A client process lands in your intake form').item.json['Client company'] }}\nProcess: {{ $('A client process lands in your intake form').item.json['Process name'] }}\nDone today by: {{ $('A client process lands in your intake form').item.json['Who does it today'] }}\nFrequency: {{ $('A client process lands in your intake form').item.json['How often'] }}\nTools: {{ $('A client process lands in your intake form').item.json['Tools they use'] }}\nWhat goes wrong: {{ $('A client process lands in your intake form').item.json['What goes wrong today'] }}\n\nDocument text:\n{{ $json.text }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "notes": "who does it, how often, minutes",
+      "notesInFlow": true
+    },
+    {
+      "name": "Every step gets scored on hours and effort",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        0
+      ],
+      "parameters": {
+        "jsCode": "// Your numbers, not the model's. [PLACEHOLDER] set RATE to the blended hourly rate you bill\n// the client's staff time at, and BUILD_DAY to what one build day costs them.\nconst RATE = 45;        // [PLACEHOLDER] client staff cost per hour\nconst BUILD_DAY = 800;  // [PLACEHOLDER] your build day rate\n\nconst raw = $input.first().json;\nconst parsed = typeof raw.message?.content === 'string' ? JSON.parse(raw.message.content)\n             : typeof raw.content === 'string' ? JSON.parse(raw.content)\n             : raw;\n\nconst effortDays = { rule_based: 0.5, manual: 1, judgement: 2 };\n\nconst steps = (parsed.steps || []).map(s => {\n  const hours = (Number(s.per_month) || 0) * (Number(s.minutes) || 0) / 60;\n  const share = s.automatable === 'yes' ? 1 : s.automatable === 'partly' ? 0.5 : 0;\n  const savedHours = hours * share;\n  const savedMoney = savedHours * RATE;\n  const buildCost = (effortDays[s.kind] || 1) * BUILD_DAY;\n  const payback = savedMoney > 0 ? buildCost / savedMoney : null;   // months\n  return { ...s, hours_month: +hours.toFixed(1), saved_hours_month: +savedHours.toFixed(1),\n           saved_money_month: Math.round(savedMoney), build_cost: buildCost,\n           payback_months: payback ? +payback.toFixed(1) : null,\n           phase_one: savedHours >= 4 && payback !== null && payback <= 3 && (Number(s.confidence) || 0) >= 0.6 };\n});\n\nsteps.sort((a, b) => b.saved_hours_month - a.saved_hours_month);\nconst phaseOne = steps.filter(s => s.phase_one);\n\nreturn [{ json: {\n  company: parsed.company, process: parsed.process, steps,\n  phase_one_count: phaseOne.length,\n  saved_hours_month: +steps.reduce((t, s) => t + s.saved_hours_month, 0).toFixed(1),\n  phase_one_hours_month: +phaseOne.reduce((t, s) => t + s.saved_hours_month, 0).toFixed(1),\n  phase_one_money_month: phaseOne.reduce((t, s) => t + s.saved_money_month, 0),\n  low_confidence: steps.filter(s => (Number(s.confidence) || 0) < 0.6).map(s => s.step)\n} }];"
+      },
+      "notes": "your rate, their volume",
+      "notesInFlow": true
+    },
+    {
+      "name": "Anything worth building in phase one?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        960,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.phase_one_count }}",
+              "rightValue": 1,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "notes": "four hours a month, pays back in three",
+      "notesInFlow": true
+    },
+    {
+      "name": "Parked for later, with the reason written down",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        960,
+        200
+      ],
+      "parameters": {
+        "operation": "append",
+        "options": {},
+        "documentId": {
+          "__rl": true,
+          "mode": "list",
+          "value": ""
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "list",
+          "value": ""
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "matchingColumns": [],
+          "value": {}
+        }
+      },
+      "notes": "nothing gets lost",
+      "notesInFlow": true
+    },
+    {
+      "name": "AI drafts the audit in your own format",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.8,
+      "position": [
+        1200,
+        0
+      ],
+      "parameters": {
+        "resource": "text",
+        "operation": "message",
+        "modelId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "gpt-4.1"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "Write the automation audit for {{ $json.company }}, process \"{{ $json.process }}\", for a US business owner who is not technical. Plain English, short paragraphs, no jargon, no em dashes. Use only the numbers given here, never invent one.\n\nSections, in this order:\n1. What we found, five lines on how the process runs today.\n2. What we would automate first, one short block per phase one item: the step, what triggers it, what the automation does, the tool, hours back per month.\n3. What we would leave alone for now, and why.\n4. The numbers: {{ $json.phase_one_hours_month }} hours a month back in phase one, {{ $json.phase_one_money_month }} dollars a month at the rate we agreed, out of {{ $json.saved_hours_month }} hours of automatable work in total.\n5. What we need from you to start, a short list.\n6. Open questions, one line each, taken from: {{ $json.low_confidence.join('; ') }}\n\n[PLACEHOLDER] paste your own audit template or house wording here and the model will follow it instead of these headings.\n\nThe scored steps:\n{{ JSON.stringify($json.steps, null, 1) }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "notes": "findings, plan, hours, ROI",
+      "notesInFlow": true
+    },
+    {
+      "name": "The audit doc appears in your client folder",
+      "type": "n8n-nodes-base.googleDocs",
+      "typeVersion": 2,
+      "position": [
+        1440,
+        0
+      ],
+      "parameters": {
+        "operation": "create",
+        "folderId": {
+          "__rl": true,
+          "mode": "list",
+          "value": ""
+        },
+        "title": "=Automation audit, {{ $('Every step gets scored on hours and effort').item.json.company }}, {{ $('Every step gets scored on hours and effort').item.json.process }}"
+      },
+      "notes": "one per client project",
+      "notesInFlow": true
+    },
+    {
+      "name": "The write-up goes in, section by section",
+      "type": "n8n-nodes-base.googleDocs",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        0
+      ],
+      "parameters": {
+        "operation": "update",
+        "documentURL": "={{ $json.id }}",
+        "actionsUi": {
+          "actionFields": [
+            {
+              "action": "insert",
+              "text": "={{ $('AI drafts the audit in your own format').item.json.message.content }}"
+            }
+          ]
+        }
+      },
+      "notes": "ready to send or edit",
+      "notesInFlow": true
+    },
+    {
+      "name": "The opportunity lands in your tracker",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1920,
+        0
+      ],
+      "parameters": {
+        "operation": "append",
+        "options": {},
+        "documentId": {
+          "__rl": true,
+          "mode": "list",
+          "value": ""
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "list",
+          "value": ""
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "matchingColumns": [],
+          "value": {
+            "Client": "={{ $('Every step gets scored on hours and effort').item.json.company }}",
+            "Process": "={{ $('Every step gets scored on hours and effort').item.json.process }}",
+            "Phase one items": "={{ $('Every step gets scored on hours and effort').item.json.phase_one_count }}",
+            "Hours back per month": "={{ $('Every step gets scored on hours and effort').item.json.phase_one_hours_month }}",
+            "Value per month": "={{ $('Every step gets scored on hours and effort').item.json.phase_one_money_month }}",
+            "Audit doc": "={{ $('The audit doc appears in your client folder').item.json.id }}",
+            "Audited on": "={{ $now.format('yyyy-LL-dd') }}"
+          }
+        }
+      },
+      "notes": "hours, value, payback",
+      "notesInFlow": true
+    },
+    {
+      "name": "You get pinged to check it before the client sees it",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.3,
+      "position": [
+        2160,
+        0
+      ],
+      "parameters": {
+        "otherOptions": {},
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "mode": "list",
+          "value": ""
+        },
+        "text": "=Audit ready for {{ $('Every step gets scored on hours and effort').item.json.company }}: {{ $('Every step gets scored on hours and effort').item.json.phase_one_count }} things to automate first, {{ $('Every step gets scored on hours and effort').item.json.phase_one_hours_month }} hours a month back. Doc: {{ $('The audit doc appears in your client folder').item.json.id }}. Open questions: {{ $('Every step gets scored on hours and effort').item.json.low_confidence.join('; ') || 'none' }}"
+      },
+      "notes": "the one bit you touch",
+      "notesInFlow": true
+    }
+  ],
+  "connections": {
+    "A client process lands in your intake form": {
+      "main": [
+        [
+          {
+            "node": "Their SOP or call notes get read, scans included",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Their SOP or call notes get read, scans included": {
+      "main": [
+        [
+          {
+            "node": "AI writes out the process step by step",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI writes out the process step by step": {
+      "main": [
+        [
+          {
+            "node": "Every step gets scored on hours and effort",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Every step gets scored on hours and effort": {
+      "main": [
+        [
+          {
+            "node": "Anything worth building in phase one?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anything worth building in phase one?": {
+      "main": [
+        [
+          {
+            "node": "AI drafts the audit in your own format",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Parked for later, with the reason written down",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI drafts the audit in your own format": {
+      "main": [
+        [
+          {
+            "node": "The audit doc appears in your client folder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "The audit doc appears in your client folder": {
+      "main": [
+        [
+          {
+            "node": "The write-up goes in, section by section",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "The write-up goes in, section by section": {
+      "main": [
+        [
+          {
+            "node": "The opportunity lands in your tracker",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "The opportunity lands in your tracker": {
+      "main": [
+        [
+          {
+            "node": "You get pinged to check it before the client sees it",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

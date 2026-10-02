@@ -1,0 +1,447 @@
+{
+  "name": "Style quiz lead to Pipedrive deal",
+  "nodes": [
+    {
+      "name": "Note: the problem",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -16,
+        -336
+      ],
+      "parameters": {
+        "content": "## What you told me, in plain English\n\n1. Style Quiz leads land on the website and someone chases them by hand\n2. Each lead gets read, judged and typed into Pipedrive\n3. Follow-ups depend on who remembers\n4. Meeting notes and tasks live in heads and inboxes\n5. You want AI agents that qualify, follow up, summarise and assign\n6. First goal, the quiz funnel running into the pipeline on its own\n",
+        "height": 230,
+        "width": 557
+      }
+    },
+    {
+      "name": "Note: my take",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -16,
+        384
+      ],
+      "parameters": {
+        "content": "## To go live, we wire\n\n- Your Webflow quiz webhook in place of this form, plus Pipedrive, Gmail and OpenAI credentials\n- Your style names, budget bands and pipeline stages, in the prompt and the deal node\n- Ten of your best first replies pasted into the drafting prompt, so it sounds like your team\n",
+        "height": 230,
+        "width": 640,
+        "color": 5
+      }
+    },
+    {
+      "name": "Style Quiz answers arrive",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.4,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "formTitle": "Style Quiz",
+        "formDescription": "Tell us about your project",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "Name",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Email",
+              "fieldType": "email",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Phone"
+            },
+            {
+              "fieldLabel": "Which style spoke to you?",
+              "fieldType": "dropdown",
+              "fieldOptions": {
+                "values": [
+                  {
+                    "option": "Modern"
+                  },
+                  {
+                    "option": "Classic"
+                  },
+                  {
+                    "option": "Scandinavian"
+                  },
+                  {
+                    "option": "Mixed"
+                  }
+                ]
+              }
+            },
+            {
+              "fieldLabel": "Which rooms?"
+            },
+            {
+              "fieldLabel": "Budget range",
+              "fieldType": "dropdown",
+              "fieldOptions": {
+                "values": [
+                  {
+                    "option": "Under 20k"
+                  },
+                  {
+                    "option": "20k to 50k"
+                  },
+                  {
+                    "option": "50k to 100k"
+                  },
+                  {
+                    "option": "Above 100k"
+                  }
+                ]
+              }
+            },
+            {
+              "fieldLabel": "When would you like to start?",
+              "fieldType": "dropdown",
+              "fieldOptions": {
+                "values": [
+                  {
+                    "option": "As soon as possible"
+                  },
+                  {
+                    "option": "In the next three months"
+                  },
+                  {
+                    "option": "Later this year"
+                  },
+                  {
+                    "option": "Just exploring"
+                  }
+                ]
+              }
+            },
+            {
+              "fieldLabel": "Anything else?",
+              "fieldType": "textarea"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "notes": "stands in for your Webflow quiz",
+      "notesInFlow": true
+    },
+    {
+      "name": "AI qualifies and scores the lead",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.8,
+      "position": [
+        240,
+        0
+      ],
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "gpt-4.1-mini",
+          "cachedResultName": "GPT-4.1-MINI"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "You qualify Style Quiz leads for a premium interior design studio. Read the answers and return JSON only:\n{\"style\": one of [\"modern\",\"classic\",\"scandinavian\",\"mixed\"],\n \"budget_band\": one of [\"under_20k\",\"20k_50k\",\"50k_100k\",\"above_100k\"],\n \"urgency\": one of [\"ready_now\",\"next_quarter\",\"later\",\"exploring\"],\n \"fit_score\": 0 to 100 (budget above 50k and ready within a quarter scores high, exploring under 20k scores low),\n \"summary\": two plain sentences: what they want and what makes this project interesting,\n \"reply_hook\": one sentence the first reply should open with, about their specific project}\nNever invent details. If an answer is missing, say so in the summary.",
+              "role": "system"
+            },
+            {
+              "content": "=Name: {{ $json['Name'] }}\nEmail: {{ $json['Email'] }}\nPhone: {{ $json['Phone'] }}\nStyle: {{ $json['Which style spoke to you?'] }}\nRooms: {{ $json['Which rooms?'] }}\nBudget: {{ $json['Budget range'] }}\nStart: {{ $json['When would you like to start?'] }}\nNotes: {{ $json['Anything else?'] }}"
+            }
+          ]
+        },
+        "jsonOutput": true,
+        "options": {
+          "temperature": 0
+        }
+      },
+      "notes": "style, budget band, urgency, fit score, summary",
+      "notesInFlow": true
+    },
+    {
+      "name": "Good fit?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        480,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.message.content.fit_score }}",
+              "rightValue": 60,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "notes": "score 60 and up goes to sales",
+      "notesInFlow": true
+    },
+    {
+      "name": "Parked as a nurture contact",
+      "type": "n8n-nodes-base.pipedrive",
+      "typeVersion": 1,
+      "position": [
+        480,
+        208
+      ],
+      "parameters": {
+        "resource": "person",
+        "name": "={{ $('Style Quiz answers arrive').item.json['Name'] }}",
+        "additionalFields": {
+          "email": "={{ $('Style Quiz answers arrive').item.json['Email'] }}",
+          "phone": "={{ $('Style Quiz answers arrive').item.json['Phone'] }}"
+        }
+      },
+      "notes": "no deal yet, follow-up later",
+      "notesInFlow": true
+    },
+    {
+      "name": "Person created in Pipedrive",
+      "type": "n8n-nodes-base.pipedrive",
+      "typeVersion": 1,
+      "position": [
+        720,
+        0
+      ],
+      "parameters": {
+        "resource": "person",
+        "name": "={{ $('Style Quiz answers arrive').item.json['Name'] }}",
+        "additionalFields": {
+          "email": "={{ $('Style Quiz answers arrive').item.json['Email'] }}",
+          "phone": "={{ $('Style Quiz answers arrive').item.json['Phone'] }}"
+        }
+      },
+      "notes": "matched by email, no duplicates",
+      "notesInFlow": true
+    },
+    {
+      "name": "Deal lands in the right stage",
+      "type": "n8n-nodes-base.pipedrive",
+      "typeVersion": 1,
+      "position": [
+        960,
+        0
+      ],
+      "parameters": {
+        "title": "={{ $('Style Quiz answers arrive').item.json['Name'] }}, {{ $('AI qualifies and scores the lead').item.json.message.content.style }} project, {{ $('Style Quiz answers arrive').item.json['Budget range'] }}",
+        "associateWith": "person",
+        "person_id": "={{ $json.id }}",
+        "additionalFields": {
+          "status": "open"
+        }
+      },
+      "notes": "stage picked once, in this node",
+      "notesInFlow": true
+    },
+    {
+      "name": "Summary pinned as a note",
+      "type": "n8n-nodes-base.pipedrive",
+      "typeVersion": 1,
+      "position": [
+        1200,
+        0
+      ],
+      "parameters": {
+        "resource": "note",
+        "content": "=Fit score {{ $('AI qualifies and scores the lead').item.json.message.content.fit_score }}, {{ $('AI qualifies and scores the lead').item.json.message.content.urgency }}\n{{ $('AI qualifies and scores the lead').item.json.message.content.summary }}",
+        "additionalFields": {
+          "deal_id": "={{ $json.id }}"
+        }
+      },
+      "notes": "sales reads two lines, not a form",
+      "notesInFlow": true
+    },
+    {
+      "name": "First reply written in your voice",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.8,
+      "position": [
+        1440,
+        0
+      ],
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "gpt-4.1",
+          "cachedResultName": "gpt-4.1"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "You draft the first reply to a Style Quiz lead for a premium interior design studio. Warm, short, personal, no marketing fluff, no em dashes. Open with their specific project, suggest a 20 minute discovery call, offer two time windows as placeholders, sign off as the team.\n\nStyle examples (paste 10 real past first replies here):\n[EXAMPLE 1]\n[EXAMPLE 2]",
+              "role": "system"
+            },
+            {
+              "content": "=Lead: {{ $('Style Quiz answers arrive').item.json['Name'] }}\nOpen with: {{ $('AI qualifies and scores the lead').item.json.message.content.reply_hook }}\nWhat they want: {{ $('AI qualifies and scores the lead').item.json.message.content.summary }}\nStyle: {{ $('Style Quiz answers arrive').item.json['Which style spoke to you?'] }}\nRooms: {{ $('Style Quiz answers arrive').item.json['Which rooms?'] }}\nStart: {{ $('Style Quiz answers arrive').item.json['When would you like to start?'] }}"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.4
+        }
+      },
+      "notes": "from your best past replies",
+      "notesInFlow": true
+    },
+    {
+      "name": "Draft waits in Gmail",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1680,
+        0
+      ],
+      "parameters": {
+        "resource": "draft",
+        "subject": "=Your {{ $('AI qualifies and scores the lead').item.json.message.content.style }} project",
+        "message": "={{ $json.message.content }}",
+        "options": {
+          "sendTo": "={{ $('Style Quiz answers arrive').item.json['Email'] }}"
+        }
+      },
+      "notes": "sales checks and hits send",
+      "notesInFlow": true
+    },
+    {
+      "name": "Sales gets a heads-up",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1920,
+        0
+      ],
+      "parameters": {
+        "sendTo": "sales@example.com",
+        "subject": "=New quiz lead: {{ $('Style Quiz answers arrive').item.json['Name'] }} (fit {{ $('AI qualifies and scores the lead').item.json.message.content.fit_score }})",
+        "emailType": "text",
+        "message": "={{ $('AI qualifies and scores the lead').item.json.message.content.summary }}\n\nDeal is in Pipedrive, a draft reply is waiting in Gmail.",
+        "options": {}
+      },
+      "notes": "two lines and the deal link",
+      "notesInFlow": true
+    }
+  ],
+  "connections": {
+    "Style Quiz answers arrive": {
+      "main": [
+        [
+          {
+            "node": "AI qualifies and scores the lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI qualifies and scores the lead": {
+      "main": [
+        [
+          {
+            "node": "Good fit?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Good fit?": {
+      "main": [
+        [
+          {
+            "node": "Person created in Pipedrive",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Parked as a nurture contact",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Person created in Pipedrive": {
+      "main": [
+        [
+          {
+            "node": "Deal lands in the right stage",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Deal lands in the right stage": {
+      "main": [
+        [
+          {
+            "node": "Summary pinned as a note",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Summary pinned as a note": {
+      "main": [
+        [
+          {
+            "node": "First reply written in your voice",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "First reply written in your voice": {
+      "main": [
+        [
+          {
+            "node": "Draft waits in Gmail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Draft waits in Gmail": {
+      "main": [
+        [
+          {
+            "node": "Sales gets a heads-up",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  }
+}

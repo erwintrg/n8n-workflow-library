@@ -1,0 +1,410 @@
+# Hand-written metadata for every workflow in the library.
+# tools/build_docs.py combines it with facts computed from workflow.json
+# (triggers, diagram, credentials, placeholders, node list) into the READMEs.
+# The workflow name inside workflow.json is set from `title` by tools/sanitize.py.
+
+[[workflow]]
+slug = "shorts-approval-publish"
+title = "Shorts approval and publish (template)"
+category = "Content ops"
+status = "production pattern"
+key_nodes = "Webhook, Gmail Trigger, AI Agent (Gemini), Switch, Klap API, fal.ai VEED subtitles, YouTube"
+summary = "A client approves, regenerates or skips AI-cut Shorts from a magic link or a free-text email reply. Approved clips get a title, captions and a YouTube upload."
+description = """
+The second half of a client Shorts pipeline. The review email from the long-form to Shorts template has Approve, Regenerate and Skip buttons per clip, and each button is a magic link to this workflow's webhook. A client can also just reply in plain words ("approve 1 and 3, skip the rest"): a Gmail trigger reads the reply, an AI agent on Gemini turns it into one decision per clip, and a sheet lookup adds the Klap folder id. Both paths merge into one Switch:
+
+- **approve**: export the clip from Klap and poll until it is ready, generate a title, description and three hashtags with Gemini, burn in captions with the VEED subtitles model on fal.ai, upload to YouTube and log the upload.
+- **regenerate**: look up the source video in the tracking sheet, submit a new Klap task, poll, log the new clips and send a fresh review email with new magic links.
+- **skip**: log the decision.
+"""
+configure = [
+  "Replace the token `client-slug` everywhere (webhook path, Gmail label filter, email subjects) with your client's slug, as the header sticky note describes.",
+  "Set the tracking sheet columns: timestamp, source_type, youtube_url, video_title, from_address, raw_email_excerpt, klap_task_id, klap_folder_id, status. The long-form to Shorts template writes to the same sheet.",
+  "Uploads are forced to private in `Prepare YouTube Upload Payload` (`privacy: 'private'`). Change it when the copy goes live.",
+]
+design_notes = [
+  "Two ways to decide, one decision shape. The magic link and the email reply both end as `{clip_id, folder_id, action, publish_when}` before the Switch, so the publish logic exists once.",
+  "The webhook answers the client at once (Respond to Webhook runs before the slow Klap and upload work). The workflow has a 30 minute execution timeout for the polling loops.",
+  "Polling loops (Wait, status call, IF back to Wait) for the Klap export and the regeneration task, instead of one long fixed sleep.",
+  "Gemini is called with a JSON schema (`responseJsonSchema`), so the title and hashtags are parsed, not scraped out of prose. The reply agent defaults to skip when a reply is unclear.",
+]
+limitations = [
+  "The polling loops have no retry cap. A Klap task that never reaches ready keeps looping until the execution timeout.",
+  "The magic links carry clip id, folder id and action in the query string with no signature. Anyone with the link can approve, which is acceptable for a private review email but not for a public page.",
+  "`regenerate_focus` from the reply agent is only stored for reference; Klap's submit endpoint has no field for it (noted in a sticky).",
+  "One client per copy: the template is copied and its tokens and credentials replaced per client.",
+]
+
+[[workflow]]
+slug = "longform-to-shorts"
+title = "YouTube long-form to Shorts (template)"
+category = "Content ops"
+status = "production pattern"
+key_nodes = "Gmail Trigger, Schedule, YouTube, Gemini (HTTP), Klap API, Google Sheets, Gmail"
+summary = "A new long-form video (sent by the client or found on their channel) is cut into Shorts by Klap, logged, and sent to the client as a review email with approve, regenerate and skip links."
+description = """
+The first half of the client Shorts pipeline. Three entry points feed one path:
+
+- the client emails a YouTube link to a shared inbox; a Gmail label per client routes it to this copy, and an IF node checks the sender again,
+- an hourly schedule lists the client's channel for uploads from the last two hours, with a dedupe step so a video is cut once,
+- a manual trigger with a test URL.
+
+Every request is logged to a tracking sheet. Email requests go to Gemini, which turns free text ("five clips, under 45 seconds, no emoji") into Klap settings through a JSON schema; the other sources get defaults. Klap cuts the video, the workflow polls until the task is ready, logs every clip with its virality score, and emails the client one HTML card per clip with Approve, Regenerate and Skip links that point at the [Shorts approval template](../shorts-approval-publish/).
+"""
+configure = [
+  "Replace `client-slug`, `REPLACE_WITH_CLIENT_YOUTUBE_CHANNEL_ID` and `REPLACE_WITH_CLIENT_EMAIL`. The header sticky note lists every spot.",
+  "Create a Gmail filter that labels the client's mail `client:<slug>`. The trigger only reads that label.",
+  "Set `N8N_BASE_URL` in `Render Clip List HTML` so the review links reach your copy of the approval workflow.",
+]
+design_notes = [
+  "Routing by Gmail label: one shared inbox, one label per client, one workflow copy per client. Mail from strangers matches no label, so no copy ever sees it, and the IF node checks the sender a second time.",
+  "The model only parses intent into a fixed schema and must leave out what the client did not say. Defaults are applied in code afterwards, so a missing field never becomes a guess.",
+  "Dedupe on the video URL across executions keeps the hourly channel check from cutting the same video twice.",
+  "The review email is plain HTML built in a Code node: one card per clip with the virality score, a preview link and three buttons.",
+]
+limitations = [
+  "Same polling pattern as the approval template, bounded only by the 30 minute execution timeout.",
+  "The schedule branch reads at most five uploads from the last two hours. A burst of more uploads in that window would be missed.",
+]
+
+[[workflow]]
+slug = "support-replies-knowledge-base"
+title = "AI support replies from a knowledge base"
+category = "Customer support"
+status = "prototype"
+key_nodes = "Gmail Trigger, Text Classifier, Pinecone Vector Store, OpenAI, Gmail, Error Trigger"
+summary = "Support emails are answered from a Pinecone knowledge base in the same Gmail thread, or handed to a person when the knowledge base has no solid match."
+description = """
+A Gmail trigger reads new unread mail. A text classifier on gpt-4.1-mini sorts it into support or other; everything else stays untouched in the inbox. For support mail the subject and body are searched in Pinecone, and a Code node keeps only matches above a similarity threshold and joins them into one context block. With at least one good match, OpenAI writes a short reply that may only use facts from those excerpts, and the reply goes out in the same Gmail thread. With no good match, the email goes to a person together with the best score. An Error Trigger branch emails the team when any step fails after its retries.
+"""
+configure = [
+  "Load your documents into the Pinecone index with `text-embedding-3-small`, the same model the search node uses.",
+  "Tune `THRESHOLD` (0.75) in `Best matches bundled as context` on a sample of real emails.",
+  "In the workflow settings, select this workflow as its own error workflow, otherwise the Error Trigger branch never runs.",
+]
+design_notes = [
+  "Classify first, so newsletters and auto-replies never reach the model that writes replies.",
+  "A hard similarity threshold in code decides between answering and escalating. The writing model never sees weak matches.",
+  "The reply prompt forbids invented prices, dates, links or promises, and tells the model to hand the rest to a person when the excerpts only answer part of the question.",
+  "Retries with backoff on every external call, plus an Error Trigger alert, so a failed reply is visible instead of silent.",
+]
+limitations = [
+  "Only reads the knowledge base. Loading and updating the Pinecone index is a separate job.",
+  "Replies go out without review once the threshold is met. Start with a higher threshold, or swap the reply node for a draft.",
+]
+
+[[workflow]]
+slug = "invoice-intake-ap-control"
+title = "Vendor invoice intake and AP control (AccuLynx-ready)"
+category = "Finance ops"
+status = "prototype"
+key_nodes = "Gmail Trigger, Extract from File, OpenAI, Google Sheets, Code, Google Drive, Form, Gmail"
+summary = "Invoice PDFs from an AP inbox are read, matched to a job, checked for duplicates and filed; a form reconciles vendor statements line by line before payment."
+description = """
+Two parts.
+
+1. **Intake.** A Gmail trigger picks up mail with attachments (out-of-office replies excluded) and the PDF text is extracted. OpenAI pulls out vendor, invoice number, date, amount, a credit flag and any job reference, and returns empty fields instead of guesses. A Code node reads the job list and the invoice register from a Google Sheet: duplicates are caught on vendor plus invoice number (and on vendor, amount and date for vendors that reuse numbers), and the job is matched on name, address, PO or claim number. Only confident matches are renamed, filed to Google Drive and added to the register; everything else goes to an exceptions tab with the reason.
+2. **Statement check.** An n8n form takes a vendor statement, one line per invoice. A Code node ticks every line off against the register and reports missing invoices and credits, duplicates, wrong amounts, invoices without a job, and a statement total that does not add up. The list is emailed before anyone pays.
+
+AccuLynx itself is not called. The Google Sheet stands in for the AccuLynx job list and invoice register, and the register rows are ready to be entered.
+"""
+configure = [
+  "Prepare the AP control sheet with a `Type` column (job or invoice) and the columns the code reads: JobID, JobName, Address, PONumber, ClaimNumber, Vendor, InvoiceNumber, InvoiceDate, Amount.",
+  "Set your file naming convention in `Match the job, catch duplicates` (marked `[PLACEHOLDER]`).",
+]
+design_notes = [
+  "The model only reads the document. Matching, duplicate checks and reconciliation are plain code, so the same input always gives the same answer.",
+  "Confidence gate: a job match needs a long enough identifier and a model confidence of at least 0.7, otherwise the invoice goes to exceptions with a written reason. Nothing is guessed.",
+  "The statement check is read only and says so in the email it sends.",
+]
+limitations = [
+  "AccuLynx is not called. Wiring its API depends on the plan's API access (noted in the sticky).",
+  "Only the first attachment (`attachment_0`) is read, and scanned PDFs without a text layer need an OCR step first.",
+]
+
+[[workflow]]
+slug = "mcp-inquiry-agent-human-review"
+title = "MCP inquiry agent, read only, with human review"
+category = "AI agents"
+status = "prototype"
+key_nodes = "Webhook, AI Agent, Anthropic Chat Model, MCP Client Tool, Structured Output Parser, Slack"
+summary = "An agent answers customer inquiries with tools discovered live from an MCP server, returns a strict JSON draft, and a person approves or escalates it in Slack."
+description = """
+A webhook receives an inquiry (id, customer email, text). An AI agent on an Anthropic model gets the MCP server's tools at run time and is told to pick the one that fits, check every required argument against the tool schema before calling it, use read tools only and make at most three calls. A structured output parser forces one shape: summary, retrieved context, draft reply, next action (Approve or Escalate), reason and the tools used. If the agent errors or returns anything else, a fallback node builds the same shape with Escalate and the error as the reason, so the caller always gets a valid payload. Every result is posted to a Slack review channel and returned to the caller. A manual trigger fires three test inquiries at the endpoint: a standard one, an off-topic one and one that should escalate.
+"""
+configure = [
+  "Point the MCP Client Tool at your server's SSE endpoint and add its auth header as a credential.",
+  "Fill the two `[PLACEHOLDER]` lines in the agent's system message (what the business does, and the tone).",
+]
+design_notes = [
+  "Tools are discovered live from the MCP server, so a new tool on the server needs no workflow change.",
+  "Nothing goes to the customer automatically. The agent drafts, a person decides in Slack.",
+  "Failure is a normal output: the agent's error output and a shape check both lead to an Escalate payload with the same fields, so callers never handle a crash.",
+  "The three test scenarios sit next to the workflow, so every prompt change can be re-tested in one click.",
+]
+limitations = [
+  "Read only is enforced by the prompt, not by the server. Connect the agent to an MCP server or token that only exposes read tools.",
+  "The webhook answers after the Slack post, so a slow model keeps the caller waiting.",
+]
+
+[[workflow]]
+slug = "stock-sync-red-amber-green"
+title = "Daily stock sync with red, amber, green alerts"
+category = "E-commerce ops"
+status = "prototype"
+key_nodes = "Schedule, HTTP Request (Amazon SP-API, TikTok Shop, Jetpack), Code, Postgres, Slack, Gmail, Google Sheets"
+summary = "Nightly pull of Amazon, TikTok Shop and warehouse stock into one SKU table in Postgres, with red, amber or green status per SKU and data-health flags."
+description = """
+At 02:00 the workflow pulls inventory from the Amazon Selling Partner API, the TikTok Shop Partner API and the Jetpack warehouse API. A Code node maps every marketplace SKU through a SKU map to one internal SKU, converts packs to bottles, and flags unmapped SKUs, missing lead times and missing delivery dates. Each row is inserted into a Postgres snapshot table (insert only, one row per date, SKU and source). A second Code node applies the rules from the existing stock spreadsheet: days of cover against lead time plus safety days gives red, amber or green, and a SKU without a sales rate stays grey, never green. Red and amber SKUs go to Slack and an email digest, followed by a data-health row in a Google Sheet. An all-green night posts one line to Slack.
+"""
+configure = [
+  "Create the `inventory_snapshots` table with a unique key on `(snapshot_date, sku, source)`; the insert relies on it (`ON CONFLICT DO NOTHING`).",
+  "Fill `SKU_MAP` in `One SKU table, in bottles, gaps flagged` (marketplace code, internal SKU, bottles per unit, lead time).",
+]
+design_notes = [
+  "All maths in one unit (bottles), converted at the edge through the SKU map, so packs and single units never get mixed.",
+  "Unknown data is grey, never green, and a trust value is shown next to every status.",
+  "History is insert only, so a rerun on the same night cannot overwrite a snapshot.",
+  "Thresholds (safety days, demand change) are constants at the top of the rules node, ready to move into an admin table.",
+]
+limitations = [
+  "The sales rate map is empty as built (phase two in the brief), so every SKU is grey and the red and amber branch does not fire yet.",
+  "The data-health row is only written on nights with red or amber SKUs; the all-green branch ends at Slack.",
+  "The Amazon and TikTok calls take a pasted access token and signature. Production needs the LWA token refresh and TikTok request signing as their own steps.",
+]
+
+[[workflow]]
+slug = "clinic-call-bot-nightly-test"
+title = "Clinic call bot: outcomes to GoHighLevel and a nightly break test"
+category = "Voice AI ops"
+status = "prototype"
+key_nodes = "Webhook, IF, HTTP Request (GoHighLevel, Retell), Google Sheets, Schedule, OpenAI"
+summary = "After each Retell call, bookings go into GoHighLevel and its calendar and stuck calls become call-backs; every night scripted test calls are graded into a scorecard."
+description = """
+Two parts.
+
+1. **After every call.** Retell's call-analyzed webhook arrives and a Set node pulls out call id, phone, duration, summary, booking flag, slot, patient name, escalation reason, recording and transcript. A call only counts as done when the bot booked, with a slot and a name. Then the contact is upserted in GoHighLevel on the phone number, the appointment is created in the clinic calendar, and the call is logged to a sheet. Any other call upserts the contact with call-back tags, the reason, the summary and the recording, so a person follows up.
+2. **Every night.** Test scripts are read from a sheet (scenario, what the caller does, what should happen). For each one, Retell places a test call from a test-caller agent to the clinic agent with the script as dynamic variables, OpenAI grades the transcript strictly against the expected behaviour, and the verdict goes to a scorecard tab.
+"""
+configure = [
+  "Create the GoHighLevel custom fields the payloads use: call_id, stuck_reason, call_recording, call_summary.",
+  "Prepare the call bot sheet with three tabs: Live calls, Break tests (scenario, what_the_caller_does, what_should_happen) and Scorecard.",
+]
+design_notes = [
+  "A booking counts only with all three: the booked flag, a real slot and a name. Anything less becomes a call-back, because a booking made on a guess costs more than a missed one.",
+  "Contacts are upserted on the phone number, so a retried webhook does not create a second contact.",
+  "The test suite lives in a sheet, so staff can add a failure case without touching the workflow, and every prompt change is re-tested the same way.",
+  "The grading prompt lists hard fails: an invented price, clinical advice, claiming to be human, booking without confirming the slot, hanging up on a silent caller.",
+]
+limitations = [
+  "The nightly grader reads the transcript from the create-phone-call response, which returns before the call has happened. Add a wait and a get-call step (or route the call-analyzed webhook) before grading.",
+  "Only booked calls are logged to the Live calls tab; the call-back branch ends at GoHighLevel.",
+  "GoHighLevel and Retell keys are header placeholders. A Header Auth credential is the better home.",
+]
+
+[[workflow]]
+slug = "leads-to-gohighlevel-no-duplicates"
+title = "Leads into GoHighLevel with no duplicates and no silent failures"
+category = "CRM and lead routing"
+status = "prototype"
+key_nodes = "Webhook, Set, HTTP Request (GoHighLevel), IF, Slack, Google Sheets, Schedule, Filter"
+summary = "One webhook for every lead source: payloads are normalised, upserted into GoHighLevel, noted and opened as opportunities, with refusals flagged in Slack and an hourly replay."
+description = """
+A webhook takes leads from forms, Zapier or any other system. A Set node maps the different payload shapes onto one (email, phone, first and last name, source) and builds a stable dedupe key from the source's own id, or from email plus source. The contact is upserted in GoHighLevel. If GoHighLevel accepts it, the raw payload is attached as a note, an opportunity opens in the new-lead stage, and the payload plus response are logged to a sheet. If it refuses, Slack gets the status code, the reason and the lead. A second branch runs every hour, reads a Failed tab, keeps rows tried fewer than three times and sends them to the upsert endpoint again.
+"""
+configure = [
+  "Create a `dedupe_key` custom field in GoHighLevel and the Leads and Failed tabs in the log sheet.",
+]
+design_notes = [
+  "Upsert instead of create, so GoHighLevel matches an existing contact by email or phone and a retried webhook does not add a second one. The dedupe key is stored on the contact too.",
+  "`neverError` plus `fullResponse` on the upsert: the IF node reads the real status code and contact id instead of the workflow stopping on a 4xx.",
+  "The original payload is kept twice, as a note on the contact and in the log, because debugging an integration without it is guesswork.",
+]
+limitations = [
+  "Nothing writes to the Failed tab yet. The refusal branch only posts to Slack, although its message says the lead is on the Failed tab. One Google Sheets append closes the loop.",
+  "The replay never increments the attempts column, and it re-sends the stored payload as is. Map it through the same shape as the live path first.",
+  "The GoHighLevel token is a header placeholder. A Header Auth credential is the better home.",
+]
+
+[[workflow]]
+slug = "price-monitoring-alerts"
+title = "Price monitoring with Telegram and email alerts"
+category = "E-commerce monitoring"
+status = "prototype"
+key_nodes = "Schedule, Google Sheets, HTTP Request, Code, IF, Telegram, Gmail, Form"
+summary = "Products added through a form are checked every six hours across stores; a price drop sends a Telegram message and an email."
+description = """
+A form takes a product and its store links, one per line, and each link becomes its own row on a Google Sheet watchlist. Every six hours the workflow reads the watchlist and fetches each store page one at a time with a two second gap. A Code node reads the price from the page's schema.org JSON-LD offer, with the `itemprop="price"` and `product:price:amount` meta tags as fallbacks. The new price is written back to the sheet, and when it is lower than the last one, Telegram and Gmail send the old price, the new price, the link and whether it is under your target.
+"""
+configure = [
+  "In `The new price goes on your list`, map the columns and pick `url` as the column to match on.",
+]
+design_notes = [
+  "One parser for most stores: the schema.org offer block that shops publish for search engines, plus two meta tag fallbacks.",
+  "Polite fetching: one request at a time, two seconds apart, with a browser user agent.",
+  "An alert needs a real drop against the last stored price, and it says whether the target was reached.",
+]
+limitations = [
+  "Stores that render the price with JavaScript return no price. The row is marked unreadable and needs a store-specific rule.",
+  "Prices written with a thousands separator and a decimal comma (1.299,00) do not parse; JSON-LD prices normally use a plain decimal point.",
+]
+
+[[workflow]]
+slug = "crm-customer-to-proposal"
+title = "New CRM customer to approved, sent proposal"
+category = "Sales ops"
+status = "prototype"
+key_nodes = "Webhook, HTTP Request, OpenAI, Google Docs, Gmail (send and wait), IF, Google Sheets"
+summary = "A new CRM record triggers an AI-written email and proposal in Google Docs; a manager approves by email before it goes out from the official mailbox."
+placeholder_ignore = ["[CONFIRM]"]
+description = """
+The CRM calls a webhook when a customer record is created. The workflow fetches the full record from the CRM API, flattens it (name, company, occasion, dates, guests, budget, notes) and asks OpenAI for one JSON object with the email subject, the email body and the proposal text, written for a hospitality business from your packages and past proposals, with `[CONFIRM]` wherever a number is missing. The proposal becomes a Google Doc. A manager gets the draft through Gmail send-and-wait with approve and decline buttons, and the execution pauses until someone clicks. Approved: the email and the doc link go to the customer from the official mailbox and the send is logged to a sheet. Declined: the draft goes back to the sales team.
+"""
+configure = [
+  "Paste your packages, rates and a few past proposals into the system prompt of `AI writes the email and the proposal`.",
+  "Map the record fields in `One clean customer record` to your CRM's field names.",
+]
+design_notes = [
+  "Human approval without extra tooling: Gmail send-and-wait with a double approval button pauses the execution until the manager decides.",
+  "Missing numbers are marked `[CONFIRM]` instead of invented.",
+  "The CRM is reached through one webhook and one HTTP call, so HubSpot, Pipedrive or Zoho is the same swap.",
+]
+limitations = [
+  "The proposal doc is created by title and the text is appended once. There is no house template or formatting step.",
+]
+
+[[workflow]]
+slug = "process-audit-to-automation-plan"
+title = "Process audit to automation plan"
+category = "Consulting ops"
+status = "prototype"
+key_nodes = "Form, Extract from File, OpenAI, Code, IF, Google Docs, Google Sheets, Slack"
+summary = "An intake form with an SOP or call notes becomes a scored step list, an audit document with hours and value saved, a tracker row and a review ping."
+description = """
+An n8n form takes one client process: company, process name, owner, frequency, tools, what goes wrong today, and the SOP or call notes as a file. The PDF text is extracted and OpenAI returns the process as strict JSON, step by step: owner, runs per month, minutes per run, kind (manual, rule based, judgement), whether it can be automated, how, and a confidence. A Code node does the money: hours per month, the share that can be automated, value at your hourly rate, build cost by effort, payback in months, and a phase one flag for steps that save at least four hours a month, pay back within three months and have a confidence of 0.6 or more. If nothing qualifies, the scored process is parked in a sheet. Otherwise a second OpenAI call drafts the audit in fixed sections using only those numbers, the text goes into a new Google Doc, the opportunity goes into a tracker sheet, and Slack asks you to review it before the client sees it.
+"""
+configure = [
+  "Set `RATE` and `BUILD_DAY` in `Every step gets scored on hours and effort` to your numbers.",
+]
+design_notes = [
+  "The model extracts and drafts; the arithmetic (hours, value, payback, phase one) is plain code with your rates as constants, so the numbers are reproducible.",
+  "Steps with low confidence are carried into the audit as open questions instead of being dropped.",
+  "A person reviews every audit before the client sees it.",
+]
+limitations = [
+  "Only PDFs are read. The form also accepts .docx and images, which need a conversion or OCR step.",
+  "The effort table (half a day to two days per step) is a rough default.",
+]
+
+[[workflow]]
+slug = "style-quiz-to-pipedrive"
+title = "Style quiz lead to Pipedrive deal"
+category = "CRM and lead routing"
+status = "prototype"
+key_nodes = "Form, OpenAI, IF, Pipedrive, Gmail"
+summary = "Quiz answers are scored by OpenAI; good fits become a Pipedrive person, deal and note plus a drafted first reply in Gmail, the rest are kept as nurture contacts."
+description = """
+An n8n form stands in for the website quiz (style, rooms, budget band, start date, notes). OpenAI qualifies the lead into fixed fields: style, budget band, urgency, a 0 to 100 fit score, a two sentence summary and an opening line for the reply. A score of 60 or more creates a Pipedrive person, a deal and a note with the score and summary. A second OpenAI call then drafts a first reply in the studio's voice, saved as a Gmail draft for sales to check and send, and sales gets a heads-up email. Lower scores are saved as a Pipedrive person for nurture, without a deal.
+"""
+configure = [
+  "Replace the form trigger with your quiz's webhook, and paste real past first replies into the drafting prompt.",
+  "Set the pipeline stage in `Deal lands in the right stage`; without it Pipedrive uses the default stage.",
+]
+design_notes = [
+  "Scoring returns a fixed schema, so routing is a plain IF on a number.",
+  "The first reply is a draft and never sent automatically.",
+  "The scoring rule is written in the prompt in plain words (budget above 50k and ready within a quarter scores high), so a non-developer can change it.",
+]
+limitations = [
+  "The person is created without searching first, so a returning lead becomes a second Pipedrive person. The node note says matched by email; the node itself does not search.",
+]
+
+[[workflow]]
+slug = "workflow-health-check-gohighlevel"
+title = "Workflow health check for GoHighLevel"
+category = "QA and monitoring"
+status = "prototype"
+key_nodes = "Form, HTTP Request (GoHighLevel), Wait, OpenAI, IF, Google Sheets, Gmail"
+summary = "Point a form at a GoHighLevel workflow: a tagged test contact is pushed through, read back after two minutes, and OpenAI compares the result with what should have happened."
+description = """
+A form takes the workflow name, the platform, what should happen and a test email. The workflow pulls the location's workflows from the GoHighLevel API, upserts one test contact tagged `healthcheck`, waits two minutes for the automations to run, and reads the contact back. OpenAI compares the expected behaviour with the workflow configuration and the contact's state and returns JSON: passed, broken step, likely cause, fix and confidence. Passes are logged to a sheet; failures are logged as findings and emailed.
+"""
+configure = [
+  "The GoHighLevel Header Auth credential must send `Authorization: Bearer <private integration token>`.",
+]
+design_notes = [
+  "Test the real path with a real, tagged contact instead of only reading the configuration, because a credential that was re-created and never re-selected looks fine on paper and still fails.",
+  "The model compares values, not labels, and has to say when it is not sure.",
+]
+limitations = [
+  "Only GoHighLevel is wired. The form offers n8n and Make.com, but those paths do not exist yet.",
+  "The report goes to the address typed in as the test email, which is also the test contact's email.",
+]
+
+[[workflow]]
+slug = "voice-calls-to-gohighlevel"
+title = "Voice agent calls into GoHighLevel with summary and recording"
+category = "Voice AI ops"
+status = "prototype"
+key_nodes = "Webhook, Set, IF, OpenAI, HTTP Request (GoHighLevel), Google Sheets"
+summary = "ElevenLabs agent calls that were real conversations are scored by OpenAI and land in GoHighLevel as a contact, a note with summary, length and recording, and an opportunity."
+description = """
+The ElevenLabs post-call webhook arrives (the calls run through Telnyx). A Set node pulls out the conversation id, phone, direction, duration, the transcript as text and the recording link. A call counts as a conversation when it lasted at least 40 seconds and the caller said something; everything else is logged to a Not a lead tab with the reason. For real calls OpenAI reads the transcript for a real estate investment firm and returns a summary, property, motivation, timeline, price expectation and a qualified flag with a reason. The contact is upserted in GoHighLevel on the phone number with tags and custom fields, a note gets the summary, length, recording and call id, an opportunity opens in the qualified or needs-review stage, and the call is logged.
+"""
+configure = [
+  "Create the GoHighLevel custom fields the payload uses: call_id, call_duration_secs, call_recording, seller_timeline.",
+]
+design_notes = [
+  "A call is judged on duration and on whether the other side spoke, so a long voicemail or silence does not become a lead.",
+  "Contacts are upserted on the phone number, so a retried webhook does not create a second lead.",
+  "The model fills fixed fields and must leave a field empty rather than invent it.",
+  "Every call, lead or not, is logged, so call and lead counts can be checked.",
+]
+limitations = [
+  "The recording link points at the ElevenLabs API audio endpoint, which needs an API key to play. Store a public or signed URL if the team should click it.",
+  "The GoHighLevel token is a header placeholder. A Header Auth credential is the better home.",
+]
+
+[[workflow]]
+slug = "typeform-to-hubspot"
+title = "Typeform leads into HubSpot and email segments"
+category = "CRM and lead routing"
+status = "prototype"
+key_nodes = "Typeform Trigger, Code, IF, HubSpot, HTTP Request (HubSpot lists API), Gmail"
+summary = "Typeform answers are mapped in code, upserted as HubSpot contacts on email, opened as a deal and added to the list that starts the matching email segment."
+description = """
+The Typeform trigger fires on every submission. A Code node maps question titles to HubSpot fields (several common spellings per field) and picks the email segment list from the answer to the segment question, with a default list. Submissions without a usable email are emailed to you with everything they answered, so no lead disappears. Valid ones are upserted as HubSpot contacts on email with lifecycle stage lead, a deal opens and is associated with the contact, and the contact is added to the segment list through the HubSpot lists API, which is what starts the emails.
+"""
+configure = [
+  "Set your pipeline stage in `A deal opens in your first stage` (it uses HubSpot's default `appointmentscheduled`).",
+]
+design_notes = [
+  "All field mapping lives in one Code node with a segment table at the top, so a renamed Typeform question is a one line change.",
+  "Contacts are upserted on email, so repeat submissions update the same contact.",
+  "Bad submissions are not dropped: they are emailed with the raw answers.",
+]
+limitations = [
+  "The email check is a simple contains `@` and `.` test.",
+]
+
+[[workflow]]
+slug = "docusign-to-sharepoint"
+title = "Signed DocuSign files filed in SharePoint"
+category = "Document ops"
+status = "prototype"
+key_nodes = "Webhook, IF, HTTP Request (DocuSign), Set, SharePoint, Outlook, Excel 365"
+summary = "DocuSign Connect posts completed envelopes; the signed PDF is fetched, named, uploaded to SharePoint, announced in Outlook and logged in Excel keyed on the envelope id."
+description = """
+DocuSign Connect calls a webhook on envelope events. Only `envelope-completed` goes on; sent, viewed and declined events end in a No-op. The combined signed document is downloaded from the DocuSign eSignature API, a Set node builds the file name from the date, the email subject and the start of the envelope id (plus a year folder name), the PDF is uploaded to SharePoint, the team gets the SharePoint link in Outlook, and an Excel 365 log row is upserted on the envelope id.
+"""
+configure = [
+  "Point DocuSign Connect at the webhook URL, and give the DocuSign Header Auth credential an access token.",
+]
+design_notes = [
+  "Filter on the completed event first, so drafts and partial signings never create files.",
+  "The audit log is an upsert on the envelope id, so a repeated DocuSign delivery overwrites its row instead of adding a duplicate.",
+  "If the DocuSign plan includes the native SharePoint connector, the sticky note says to switch that on instead of building this.",
+]
+limitations = [
+  "The computed year folder is not passed to the SharePoint upload yet. Pick the site, library and folder in the node.",
+]

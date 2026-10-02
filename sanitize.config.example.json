@@ -1,0 +1,15 @@
+{
+  "_note": "Example with fictional values. Copy it to a folder OUTSIDE this repo before you put real names, ids or addresses in it.",
+  "workflows": [
+    {"source": "demo-lead-router", "slug": "demo-lead-router"}
+  ],
+  "instance_urls": ["https://n8n.acme-example.com"],
+  "replace": [
+    ["Jane Example", "the client"],
+    ["Acme Example Co", "your company"]
+  ],
+  "emails": {
+    "jane@acme-example.com": "client@example.com"
+  },
+  "blocked_terms": ["Jane Example", "Acme Example Co"]
+}

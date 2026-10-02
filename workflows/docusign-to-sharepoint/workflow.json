@@ -1,0 +1,339 @@
+{
+  "name": "Signed DocuSign files filed in SharePoint",
+  "nodes": [
+    {
+      "name": "Note: the problem",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -16,
+        -320
+      ],
+      "parameters": {
+        "content": "## What you told me, in plain English\n\n1. Someone signs an agreement in Docusign\n2. Today somebody downloads it and drops it into SharePoint by hand\n3. Files land late, in the wrong folder, or not at all\n4. You want the signed file to arrive in SharePoint on its own\n5. And to know it worked, every single time\n",
+        "height": 206,
+        "width": 529
+      }
+    },
+    {
+      "name": "Note: my take",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -16,
+        384
+      ],
+      "parameters": {
+        "content": "## To go live, we wire\n\n- Docusign Connect pointed at this URL, plus an API key for the PDF fetch, both in your Docusign admin\n- A Microsoft 365 app registration for SharePoint and Outlook, added as the credential in this workflow\n- If your Docusign plan has the native SharePoint connector, we switch it on instead and skip the build\n",
+        "height": 230,
+        "width": 640,
+        "color": 5
+      }
+    },
+    {
+      "name": "Docusign announces a signed envelope",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "docusign-completed",
+        "options": {}
+      },
+      "notes": "Docusign Connect posts here the moment it completes",
+      "notesInFlow": true
+    },
+    {
+      "name": "Fully signed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        240,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.body.event }}",
+              "rightValue": "envelope-completed",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "notes": "only completed envelopes go on",
+      "notesInFlow": true
+    },
+    {
+      "name": "Anything else is ignored",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        240,
+        208
+      ],
+      "parameters": {},
+      "notes": "sent, viewed, declined: nothing to file",
+      "notesInFlow": true
+    },
+    {
+      "name": "Signed PDF fetched from Docusign",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        0
+      ],
+      "parameters": {
+        "url": "=https://[ACCOUNT BASE].docusign.net/restapi/v2.1/accounts/[ACCOUNT ID]/envelopes/{{ $json.body.data.envelopeId }}/documents/combined",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          }
+        }
+      },
+      "notes": "one call, the combined signed document",
+      "notesInFlow": true
+    },
+    {
+      "name": "Folder and file name from the envelope",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        720,
+        0
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a1",
+              "name": "envelope_id",
+              "value": "={{ $('Docusign announces a signed envelope').item.json.body.data.envelopeId }}",
+              "type": "string"
+            },
+            {
+              "id": "a2",
+              "name": "client",
+              "value": "={{ $('Docusign announces a signed envelope').item.json.body.data.envelopeSummary.recipients.signers[0].name }}",
+              "type": "string"
+            },
+            {
+              "id": "a3",
+              "name": "subject",
+              "value": "={{ $('Docusign announces a signed envelope').item.json.body.data.envelopeSummary.emailSubject }}",
+              "type": "string"
+            },
+            {
+              "id": "a4",
+              "name": "file_name",
+              "value": "={{ $now.toFormat('yyyy-MM-dd') }} {{ $('Docusign announces a signed envelope').item.json.body.data.envelopeSummary.emailSubject }} ({{ $('Docusign announces a signed envelope').item.json.body.data.envelopeId.slice(0,8) }}).pdf",
+              "type": "string"
+            },
+            {
+              "id": "a5",
+              "name": "folder",
+              "value": "=Signed agreements/{{ $now.toFormat('yyyy') }}",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "notes": "client, date, envelope id, no typing",
+      "notesInFlow": true
+    },
+    {
+      "name": "Filed in the right SharePoint folder",
+      "type": "n8n-nodes-base.microsoftSharePoint",
+      "typeVersion": 1,
+      "position": [
+        960,
+        0
+      ],
+      "parameters": {
+        "operation": "upload",
+        "site": {
+          "__rl": true,
+          "mode": "list",
+          "value": "",
+          "cachedResultName": "Contracts (pick your site)"
+        },
+        "fileName": "={{ $json.file_name }}",
+        "requestOptions": {}
+      },
+      "notes": "your library, your folder rule",
+      "notesInFlow": true
+    },
+    {
+      "name": "Team gets the link in Outlook",
+      "type": "n8n-nodes-base.microsoftOutlook",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        0
+      ],
+      "parameters": {
+        "toRecipients": "[CONTRACTS TEAM EMAIL]",
+        "subject": "=Signed and filed: {{ $('Folder and file name from the envelope').item.json.subject }}",
+        "bodyContent": "=Signed by {{ $('Folder and file name from the envelope').item.json.client }}.\nFiled in SharePoint: {{ $json.webUrl }}",
+        "additionalFields": {}
+      },
+      "notes": "signed and filed, one click to open",
+      "notesInFlow": true
+    },
+    {
+      "name": "Audit row keyed on the envelope id",
+      "type": "n8n-nodes-base.microsoftExcel",
+      "typeVersion": 2.1,
+      "position": [
+        1440,
+        0
+      ],
+      "parameters": {
+        "resource": "worksheet",
+        "operation": "upsert",
+        "workbook": {
+          "__rl": true,
+          "mode": "list",
+          "value": "",
+          "cachedResultName": "Signed agreements log (pick the workbook)"
+        },
+        "worksheet": {
+          "__rl": true,
+          "mode": "list",
+          "value": "",
+          "cachedResultName": "Log"
+        },
+        "columnToMatchOn": "envelope_id",
+        "fieldsUi": {
+          "values": [
+            {
+              "column": "envelope_id",
+              "fieldValue": "={{ $('Folder and file name from the envelope').item.json.envelope_id }}"
+            },
+            {
+              "column": "client",
+              "fieldValue": "={{ $('Folder and file name from the envelope').item.json.client }}"
+            },
+            {
+              "column": "file",
+              "fieldValue": "={{ $('Folder and file name from the envelope').item.json.file_name }}"
+            },
+            {
+              "column": "link",
+              "fieldValue": "={{ $('Filed in the right SharePoint folder').item.json.webUrl }}"
+            },
+            {
+              "column": "filed_at",
+              "fieldValue": "={{ $now.toFormat('yyyy-MM-dd HH:mm') }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "notes": "a repeat delivery overwrites, never duplicates",
+      "notesInFlow": true
+    }
+  ],
+  "connections": {
+    "Docusign announces a signed envelope": {
+      "main": [
+        [
+          {
+            "node": "Fully signed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fully signed?": {
+      "main": [
+        [
+          {
+            "node": "Signed PDF fetched from Docusign",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Anything else is ignored",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Signed PDF fetched from Docusign": {
+      "main": [
+        [
+          {
+            "node": "Folder and file name from the envelope",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Folder and file name from the envelope": {
+      "main": [
+        [
+          {
+            "node": "Filed in the right SharePoint folder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filed in the right SharePoint folder": {
+      "main": [
+        [
+          {
+            "node": "Team gets the link in Outlook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Team gets the link in Outlook": {
+      "main": [
+        [
+          {
+            "node": "Audit row keyed on the envelope id",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  }
+}

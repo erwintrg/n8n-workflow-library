@@ -1,0 +1,490 @@
+{
+  "name": "Daily stock sync with red, amber, green alerts",
+  "nodes": [
+    {
+      "name": "Note: the problem",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -20,
+        -340
+      ],
+      "parameters": {
+        "content": "## What you told me, in plain English\n\n1. Every week someone rebuilds the stock report by hand\n2. Stock sits in Amazon, TikTok Shop and the Jetpack warehouse, separately\n3. The maths lives in a spreadsheet that already works\n4. Packs and bottles get mixed, nobody sees a red SKU early\n5. Phase one: daily sync, full history, data-health checks\n6. Then the red, amber, green engine with thresholds you edit yourself\n",
+        "height": 230,
+        "width": 578,
+        "color": 1
+      }
+    },
+    {
+      "name": "Note: my take",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -20,
+        380
+      ],
+      "parameters": {
+        "content": "## To go live, we wire\n\n- Your Amazon SP-API app (developer registration is the day-one gate), TikTok Shop and Jetpack keys\n- Your SKU map with pack sizes, and the thresholds from your spreadsheet, into the two code steps\n- Postgres and Slack in your accounts; the admin screen for thresholds and PO tracking come next\n",
+        "height": 230,
+        "width": 640,
+        "color": 5
+      }
+    },
+    {
+      "name": "Every night at two",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "days",
+              "daysInterval": 1,
+              "triggerAtHour": 2,
+              "triggerAtMinute": 0
+            }
+          ]
+        }
+      },
+      "notes": "one run, three sources, nothing typed",
+      "notesInFlow": true
+    },
+    {
+      "name": "Amazon stock pulled (SP-API)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        240,
+        0
+      ],
+      "parameters": {
+        "url": "https://sellingpartnerapi-na.amazon.com/fba/inventory/v1/summaries",
+        "options": {},
+        "method": "GET",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "granularityType",
+              "value": "Marketplace"
+            },
+            {
+              "name": "granularityId",
+              "value": "ATVPDKIKX0DER"
+            },
+            {
+              "name": "marketplaceIds",
+              "value": "ATVPDKIKX0DER"
+            },
+            {
+              "name": "details",
+              "value": "true"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-amz-access-token",
+              "value": "[LWA ACCESS TOKEN]"
+            }
+          ]
+        }
+      },
+      "notes": "LWA token, app approval is the gate",
+      "notesInFlow": true
+    },
+    {
+      "name": "TikTok Shop stock pulled (Partner API)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        0
+      ],
+      "parameters": {
+        "url": "https://open-api.tiktokglobalshop.com/product/202309/products/search",
+        "options": {},
+        "method": "POST",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "app_key",
+              "value": "[APP KEY]"
+            },
+            {
+              "name": "shop_cipher",
+              "value": "[SHOP CIPHER]"
+            },
+            {
+              "name": "timestamp",
+              "value": "={{ Math.floor(Date.now() / 1000) }}"
+            },
+            {
+              "name": "sign",
+              "value": "[SIGN]"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-tts-access-token",
+              "value": "[ACCESS TOKEN]"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ status: 'ACTIVATE', page_size: 100 }) }}"
+      },
+      "notes": "shop cipher and app sign in the query",
+      "notesInFlow": true
+    },
+    {
+      "name": "Warehouse stock pulled (Jetpack)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        0
+      ],
+      "parameters": {
+        "url": "https://[JETPACK API BASE]/inventory",
+        "options": {},
+        "method": "GET",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer [JETPACK API KEY]"
+            }
+          ]
+        }
+      },
+      "notes": "warehouse sync is the source of truth",
+      "notesInFlow": true
+    },
+    {
+      "name": "One SKU table, in bottles, gaps flagged",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        960,
+        0
+      ],
+      "parameters": {
+        "jsCode": "// [SKU MAP] one line per product, all maths in bottles, never packs\nconst SKU_MAP = {\n  'B0EXAMPLE01': { sku: 'MAG-GLY-60', bottles_per_unit: 1, lead_time_days: 45 },\n  'TT-MAG-2PK':  { sku: 'MAG-GLY-60', bottles_per_unit: 2, lead_time_days: 45 },\n};\nconst rows = [];\nconst take = (name, source, pick) => {\n  for (const it of $(name).all()) {\n    for (const r of pick(it.json)) {\n      const map = SKU_MAP[r.code];\n      const flags = [];\n      if (!map) flags.push('unmapped_sku');\n      if (map && !map.lead_time_days) flags.push('missing_lead_time');\n      if (r.expected_at === undefined) flags.push('missing_delivery_date');\n      rows.push({\n        source, code: r.code, sku: map ? map.sku : `UNMAPPED:${r.code}`,\n        on_hand_bottles: (r.on_hand || 0) * (map ? map.bottles_per_unit : 1),\n        inbound_bottles: (r.inbound || 0) * (map ? map.bottles_per_unit : 1),\n        lead_time_days: map ? map.lead_time_days : null,\n        flags,\n      });\n    }\n  }\n};\ntake('Amazon stock pulled (SP-API)', 'amazon', j => (j.payload?.inventorySummaries || []).map(s => ({ code: s.sellerSku, on_hand: s.inventoryDetails?.fulfillableQuantity, inbound: s.inventoryDetails?.inboundShippedQuantity })));\ntake('TikTok Shop stock pulled (Partner API)', 'tiktok', j => (j.data?.products || []).flatMap(p => (p.skus || []).map(s => ({ code: s.seller_sku, on_hand: (s.inventory || []).reduce((a, i) => a + (i.quantity || 0), 0), inbound: 0 }))));\ntake('Warehouse stock pulled (Jetpack)', 'jetpack', j => (j.items || []).map(i => ({ code: i.sku, on_hand: i.available, inbound: i.inbound, expected_at: i.expected_at })));\nreturn rows.map(r => ({ json: r }));"
+      },
+      "notes": "pack to bottle here, unmapped SKUs flagged",
+      "notesInFlow": true
+    },
+    {
+      "name": "Tonight's snapshot saved, history kept",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1200,
+        0
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=INSERT INTO inventory_snapshots (snapshot_date, sku, source, on_hand_bottles, inbound_bottles, lead_time_days, flags)\nVALUES (CURRENT_DATE, $1, $2, $3, $4, NULLIF($5, 'null')::int, $6)\nON CONFLICT (snapshot_date, sku, source) DO NOTHING\nRETURNING sku, source, snapshot_date;",
+        "options": {
+          "queryReplacement": "={{ $json.sku }}, {{ $json.source }}, {{ $json.on_hand_bottles }}, {{ $json.inbound_bottles }}, {{ $json.lead_time_days ?? 'null' }}, {{ $json.flags.join('|') }}"
+        }
+      },
+      "notes": "insert, never update",
+      "notesInFlow": true
+    },
+    {
+      "name": "Red, amber, green, straight from your spreadsheet",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1440,
+        0
+      ],
+      "parameters": {
+        "jsCode": "// [RULES] moved line by line from the validated spreadsheet. Two examples:\n//  1. days_of_cover = (on_hand + on_order) / daily_rate, red under lead_time + safety, amber under 1.5x that\n//  2. demand_change = this week's rate vs last week's, flag over 25 percent either way\nconst SAFETY_DAYS = 14;          // editable by an admin later, not a code release\nconst DEMAND_CHANGE_FLAG = 0.25;\nconst rows = $('One SKU table, in bottles, gaps flagged').all().map(i => i.json);\n// [DAILY SALES RATE] comes from the SP-API and TikTok sales reports in phase two; null until then\nconst rates = {};\nconst bySku = {};\nfor (const r of rows) {\n  const s = bySku[r.sku] = bySku[r.sku] || { sku: r.sku, on_hand: 0, on_order: 0, lead_time_days: r.lead_time_days, flags: new Set(), sources: [] };\n  s.on_hand += r.on_hand_bottles; s.on_order += r.inbound_bottles; s.sources.push(r.source);\n  r.flags.forEach(f => s.flags.add(f));\n}\nconst out = [];\nfor (const s of Object.values(bySku)) {\n  const rate = rates[s.sku]; const reported = rate ? rate.reported_share : null;\n  let status = 'grey', reason = 'unknown data, never green';\n  if (rate && s.lead_time_days) {\n    const cover = (s.on_hand + s.on_order) / rate.daily;\n    const need = s.lead_time_days + SAFETY_DAYS;\n    status = cover < need ? 'red' : cover < need * 1.5 ? 'amber' : 'green';\n    reason = `${cover.toFixed(0)} days of cover vs ${need} needed`;\n    if (rate.last_week && Math.abs(rate.daily - rate.last_week) / rate.last_week > DEMAND_CHANGE_FLAG) s.flags.add('demand_change');\n  }\n  out.push({ sku: s.sku, status, reason, trust: reported === null ? 'unknown' : `${Math.round(reported * 100)}% reported`, flags: [...s.flags], on_hand: s.on_hand, on_order: s.on_order });\n}\nconst alerts = out.filter(o => o.status === 'red' || o.status === 'amber');\nconst health = out.filter(o => o.flags.length);\nreturn [{ json: {\n  date: new Date().toISOString().slice(0, 10),\n  checked: out.length, alert_count: alerts.length,\n  reds: alerts.filter(a => a.status === 'red').map(a => `${a.sku} (${a.reason}, trust ${a.trust})`),\n  ambers: alerts.filter(a => a.status === 'amber').map(a => `${a.sku} (${a.reason}, trust ${a.trust})`),\n  greys: out.filter(o => o.status === 'grey').map(o => o.sku),\n  unmapped: health.filter(h => h.flags.includes('unmapped_sku')).map(h => h.sku),\n  missing_lead_time: health.filter(h => h.flags.includes('missing_lead_time')).map(h => h.sku),\n  missing_delivery_date: health.filter(h => h.flags.includes('missing_delivery_date')).map(h => h.sku),\n  demand_change: out.filter(o => o.flags.includes('demand_change')).map(o => o.sku),\n} }];"
+      },
+      "notes": "unknown is grey, never green; trust shown separately",
+      "notesInFlow": true
+    },
+    {
+      "name": "Anything red or amber?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1680,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.alert_count }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "notes": "yes alerts, no is one green line",
+      "notesInFlow": true
+    },
+    {
+      "name": "All green tonight, one line in Slack",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.3,
+      "position": [
+        1680,
+        200
+      ],
+      "parameters": {
+        "otherOptions": {},
+        "resource": "message",
+        "operation": "post",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "#stock-alerts"
+        },
+        "text": "=All green {{ $json.date }}: {{ $json.checked }} SKUs checked, {{ $json.greys.length }} grey (unknown data), {{ $json.unmapped.length }} unmapped."
+      },
+      "notes": "so you know it ran",
+      "notesInFlow": true
+    },
+    {
+      "name": "Red and amber SKUs land in Slack",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.3,
+      "position": [
+        1920,
+        0
+      ],
+      "parameters": {
+        "otherOptions": {},
+        "resource": "message",
+        "operation": "post",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "#stock-alerts"
+        },
+        "text": "=Stock check {{ $json.date }}\nRED:\n{{ $json.reds.join('\\n') || 'none' }}\nAMBER:\n{{ $json.ambers.join('\\n') || 'none' }}\nGrey (unknown data): {{ $json.greys.length }}"
+      },
+      "notes": "status and trust, side by side",
+      "notesInFlow": true
+    },
+    {
+      "name": "Digest goes out by email",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        2160,
+        0
+      ],
+      "parameters": {
+        "sendTo": "ops@example.com",
+        "subject": "=Stock alerts {{ $json.date }}: {{ $json.reds.length }} red, {{ $json.ambers.length }} amber",
+        "message": "=RED\n{{ $json.reds.join('\\n') || 'none' }}\n\nAMBER\n{{ $json.ambers.join('\\n') || 'none' }}\n\nDemand change flags: {{ $json.demand_change.join(', ') || 'none' }}\nUnmapped SKUs: {{ $json.unmapped.join(', ') || 'none' }}\nMissing lead times: {{ $json.missing_lead_time.join(', ') || 'none' }}\n\nEvery number traces to tonight's snapshot in Postgres.",
+        "options": {},
+        "resource": "message",
+        "operation": "send",
+        "emailType": "text"
+      },
+      "notes": "SendGrid or Postmark is the same node swapped",
+      "notesInFlow": true
+    },
+    {
+      "name": "Data-health row lands in your sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        2400,
+        0
+      ],
+      "parameters": {
+        "operation": "append",
+        "options": {},
+        "documentId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "",
+          "cachedResultName": "Data health (pick your sheet)"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "list",
+          "value": "",
+          "cachedResultName": "Nightly"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "date": "={{ $json.date }}",
+            "checked": "={{ $json.checked }}",
+            "red": "={{ $json.reds.length }}",
+            "amber": "={{ $json.ambers.length }}",
+            "grey": "={{ $json.greys.length }}",
+            "unmapped_skus": "={{ $json.unmapped.join(', ') }}",
+            "missing_lead_times": "={{ $json.missing_lead_time.join(', ') }}",
+            "missing_delivery_dates": "={{ $json.missing_delivery_date.join(', ') }}",
+            "demand_change": "={{ $json.demand_change.join(', ') }}"
+          },
+          "matchingColumns": [],
+          "schema": []
+        }
+      },
+      "notes": "the pilot dashboard reads this",
+      "notesInFlow": true
+    }
+  ],
+  "connections": {
+    "Every night at two": {
+      "main": [
+        [
+          {
+            "node": "Amazon stock pulled (SP-API)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Amazon stock pulled (SP-API)": {
+      "main": [
+        [
+          {
+            "node": "TikTok Shop stock pulled (Partner API)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "TikTok Shop stock pulled (Partner API)": {
+      "main": [
+        [
+          {
+            "node": "Warehouse stock pulled (Jetpack)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Warehouse stock pulled (Jetpack)": {
+      "main": [
+        [
+          {
+            "node": "One SKU table, in bottles, gaps flagged",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "One SKU table, in bottles, gaps flagged": {
+      "main": [
+        [
+          {
+            "node": "Tonight's snapshot saved, history kept",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tonight's snapshot saved, history kept": {
+      "main": [
+        [
+          {
+            "node": "Red, amber, green, straight from your spreadsheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Red, amber, green, straight from your spreadsheet": {
+      "main": [
+        [
+          {
+            "node": "Anything red or amber?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anything red or amber?": {
+      "main": [
+        [
+          {
+            "node": "Red and amber SKUs land in Slack",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "All green tonight, one line in Slack",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Red and amber SKUs land in Slack": {
+      "main": [
+        [
+          {
+            "node": "Digest goes out by email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Digest goes out by email": {
+      "main": [
+        [
+          {
+            "node": "Data-health row lands in your sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

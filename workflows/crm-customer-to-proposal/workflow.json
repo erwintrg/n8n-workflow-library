@@ -1,0 +1,448 @@
+{
+  "name": "New CRM customer to approved, sent proposal",
+  "nodes": [
+    {
+      "name": "Note: the problem",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -16,
+        -320
+      ],
+      "parameters": {
+        "content": "## What you told me, in plain English\n\n1. A new customer lands in your CRM\n2. Someone looks up who they are and what they asked for\n3. Then writes an email and a proposal by hand, every time\n4. It goes out from your official mailbox\n5. You want that whole chain to run on its own in n8n\n",
+        "height": 206,
+        "width": 466
+      }
+    },
+    {
+      "name": "Note: my take",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -16,
+        224
+      ],
+      "parameters": {
+        "content": "## To go live, we wire\n\n- Your CRM's webhook and API key in place of the first two nodes (HubSpot, Pipedrive, Zoho, all the same swap)\n- Your official mailbox, Google Workspace here, Outlook is the same node swapped\n- Your packages, rates and five of your best past proposals pasted into the prompt\n",
+        "height": 182,
+        "width": 640,
+        "color": 5
+      }
+    },
+    {
+      "name": "New customer lands in your CRM",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "new-customer",
+        "options": {}
+      },
+      "notes": "your CRM calls this the moment a record is created",
+      "notesInFlow": true
+    },
+    {
+      "name": "Their full record is pulled",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        240,
+        0
+      ],
+      "parameters": {
+        "url": "=https://[YOUR CRM API BASE]/customers/{{ $json.body.customer_id }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "notes": "one call to your CRM's API",
+      "notesInFlow": true
+    },
+    {
+      "name": "One clean customer record",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        480,
+        0
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a1",
+              "name": "name",
+              "value": "={{ $json.first_name }} {{ $json.last_name }}",
+              "type": "string"
+            },
+            {
+              "id": "a2",
+              "name": "email",
+              "value": "={{ $json.email }}",
+              "type": "string"
+            },
+            {
+              "id": "a3",
+              "name": "company",
+              "value": "={{ $json.company }}",
+              "type": "string"
+            },
+            {
+              "id": "a4",
+              "name": "event_type",
+              "value": "={{ $json.event_type }}",
+              "type": "string"
+            },
+            {
+              "id": "a5",
+              "name": "dates",
+              "value": "={{ $json.preferred_dates }}",
+              "type": "string"
+            },
+            {
+              "id": "a6",
+              "name": "guests",
+              "value": "={{ $json.guest_count }}",
+              "type": "string"
+            },
+            {
+              "id": "a7",
+              "name": "budget",
+              "value": "={{ $json.budget }}",
+              "type": "string"
+            },
+            {
+              "id": "a8",
+              "name": "notes",
+              "value": "={{ $json.notes }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "notes": "name, company, dates, guests, budget, notes",
+      "notesInFlow": true
+    },
+    {
+      "name": "AI writes the email and the proposal",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.8,
+      "position": [
+        720,
+        0
+      ],
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "gpt-4.1",
+          "cachedResultName": "gpt-4.1"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "You write the first email and the proposal for a new customer of a hospitality business (hotel, venue, events). Warm, specific, short sentences, no marketing fluff, no em dashes. Use only the customer details given, never invent rates or availability; where a number is missing write [CONFIRM]. Return JSON only:\n{\"subject\": string,\n \"email_body\": the email, plain text, 120 to 160 words, opens with their specific occasion, ends with a clear next step,\n \"proposal_title\": string,\n \"proposal_text\": the proposal, plain text with short headed sections: Your occasion, What we propose, Packages and pricing, Next steps}\n\nPackages and rates (paste yours here):\n[PACKAGE 1]\n[PACKAGE 2]\n\nStyle examples (paste five real past proposals here):\n[EXAMPLE 1]",
+              "role": "system"
+            },
+            {
+              "content": "=Customer: {{ $json.name }} ({{ $json.company }})\nEmail: {{ $json.email }}\nOccasion: {{ $json.event_type }}\nDates: {{ $json.dates }}\nGuests: {{ $json.guests }}\nBudget: {{ $json.budget }}\nNotes: {{ $json.notes }}"
+            }
+          ]
+        },
+        "jsonOutput": true,
+        "options": {
+          "temperature": 0.4
+        }
+      },
+      "notes": "in your voice, from your past proposals",
+      "notesInFlow": true
+    },
+    {
+      "name": "Proposal saved as a Google Doc",
+      "type": "n8n-nodes-base.googleDocs",
+      "typeVersion": 2,
+      "position": [
+        960,
+        0
+      ],
+      "parameters": {
+        "folderId": "[PROPOSALS FOLDER ID]",
+        "title": "=Proposal for {{ $('One clean customer record').item.json.name }}"
+      },
+      "notes": "one per customer, in your Drive",
+      "notesInFlow": true
+    },
+    {
+      "name": "Proposal text goes into the doc",
+      "type": "n8n-nodes-base.googleDocs",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        0
+      ],
+      "parameters": {
+        "operation": "update",
+        "documentURL": "={{ $json.id }}",
+        "actionsUi": {
+          "actionFields": [
+            {
+              "action": "insert",
+              "locationChoice": "end",
+              "text": "={{ $('AI writes the email and the proposal').item.json.message.content.proposal_text }}"
+            }
+          ]
+        }
+      },
+      "notes": "ready to open, share or export as PDF",
+      "notesInFlow": true
+    },
+    {
+      "name": "Manager approves with one tap",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1440,
+        0
+      ],
+      "parameters": {
+        "operation": "sendAndWait",
+        "sendTo": "manager@example.com",
+        "subject": "=Proposal ready for {{ $('One clean customer record').item.json.name }}, approve?",
+        "message": "={{ $('AI writes the email and the proposal').item.json.message.content.email_body }}\n\nProposal: https://docs.google.com/document/d/{{ $('Proposal saved as a Google Doc').item.json.id }}",
+        "approvalOptions": {
+          "values": {
+            "approvalType": "double"
+          }
+        },
+        "options": {}
+      },
+      "notes": "n8n waits until someone clicks Approve",
+      "notesInFlow": true
+    },
+    {
+      "name": "Approved?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1680,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.data.approved }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "notes": "yes sends, no goes back to the team",
+      "notesInFlow": true
+    },
+    {
+      "name": "Back to the team to rework",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1680,
+        208
+      ],
+      "parameters": {
+        "sendTo": "sales@example.com",
+        "subject": "=Proposal for {{ $('One clean customer record').item.json.name }} needs a rework",
+        "emailType": "text",
+        "message": "=Not approved. Draft and doc:\n\n{{ $('AI writes the email and the proposal').item.json.message.content.email_body }}\n\nhttps://docs.google.com/document/d/{{ $('Proposal saved as a Google Doc').item.json.id }}",
+        "options": {}
+      },
+      "notes": "with the draft and the doc link",
+      "notesInFlow": true
+    },
+    {
+      "name": "Email and proposal go out from your official mailbox",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1920,
+        0
+      ],
+      "parameters": {
+        "sendTo": "={{ $('One clean customer record').item.json.email }}",
+        "subject": "={{ $('AI writes the email and the proposal').item.json.message.content.subject }}",
+        "emailType": "text",
+        "message": "={{ $('AI writes the email and the proposal').item.json.message.content.email_body }}\n\nYour proposal: https://docs.google.com/document/d/{{ $('Proposal saved as a Google Doc').item.json.id }}",
+        "options": {}
+      },
+      "notes": "your domain, your signature",
+      "notesInFlow": true
+    },
+    {
+      "name": "Logged in your sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        2160,
+        0
+      ],
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "[SHEET ID]"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Proposals"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "date": "={{ $now.toFormat('yyyy-MM-dd HH:mm') }}",
+            "customer": "={{ $('One clean customer record').item.json.name }}",
+            "company": "={{ $('One clean customer record').item.json.company }}",
+            "occasion": "={{ $('One clean customer record').item.json.event_type }}",
+            "doc": "=https://docs.google.com/document/d/{{ $('Proposal saved as a Google Doc').item.json.id }}",
+            "status": "sent"
+          }
+        },
+        "options": {}
+      },
+      "notes": "who, when, which doc, who approved",
+      "notesInFlow": true
+    }
+  ],
+  "connections": {
+    "New customer lands in your CRM": {
+      "main": [
+        [
+          {
+            "node": "Their full record is pulled",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Their full record is pulled": {
+      "main": [
+        [
+          {
+            "node": "One clean customer record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "One clean customer record": {
+      "main": [
+        [
+          {
+            "node": "AI writes the email and the proposal",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI writes the email and the proposal": {
+      "main": [
+        [
+          {
+            "node": "Proposal saved as a Google Doc",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Proposal saved as a Google Doc": {
+      "main": [
+        [
+          {
+            "node": "Proposal text goes into the doc",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Proposal text goes into the doc": {
+      "main": [
+        [
+          {
+            "node": "Manager approves with one tap",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manager approves with one tap": {
+      "main": [
+        [
+          {
+            "node": "Approved?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Approved?": {
+      "main": [
+        [
+          {
+            "node": "Email and proposal go out from your official mailbox",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Back to the team to rework",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email and proposal go out from your official mailbox": {
+      "main": [
+        [
+          {
+            "node": "Logged in your sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  }
+}

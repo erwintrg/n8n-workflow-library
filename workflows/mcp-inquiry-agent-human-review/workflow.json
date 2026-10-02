@@ -1,0 +1,494 @@
+{
+  "name": "MCP inquiry agent, read only, with human review",
+  "nodes": [
+    {
+      "name": "Note: the problem",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -16,
+        -336
+      ],
+      "parameters": {
+        "content": "## What you told me, in plain English\n\n1. A customer inquiry comes in\n2. An agent picks the right lookup tool on your MCP server\n3. It checks the arguments before calling anything, read only\n4. It returns a summary, context, a draft reply and Approve or Escalate\n5. Tool fails or the question is off topic? It escalates, nothing crashes\n6. A person reviews, nothing is sent or changed on its own\n",
+        "height": 230,
+        "width": 571
+      }
+    },
+    {
+      "name": "Note: my take",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -16,
+        640
+      ],
+      "parameters": {
+        "content": "## To go live, we wire\n\n- Your MCP server URL and its auth header, one credential in the tool node, tools get discovered live\n- A model key (Anthropic or OpenAI, whichever you run) and the Slack channel where reviewers sit\n- Want it as a Python script? Same shape ports 1:1 to the official MCP SDK, three tests included\n",
+        "height": 230,
+        "width": 640,
+        "color": 5
+      }
+    },
+    {
+      "name": "A customer inquiry arrives",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "customer-inquiry",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "notes": "from your form, inbox or ticket tool, same node swap",
+      "notesInFlow": true
+    },
+    {
+      "name": "Agent picks the lookup tool and checks its arguments",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 2,
+      "position": [
+        240,
+        0
+      ],
+      "parameters": {
+        "promptType": "define",
+        "text": "=Customer inquiry {{ $json.body.inquiry_id }} from {{ $json.body.customer_email }}:\n\n{{ $json.body.inquiry }}",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "You are a read-only support triage agent for [PLACEHOLDER: one line on the business and what its lookup tools cover].\n\nHow you work, in order:\n1. Read the inquiry and write a one-sentence summary of what the customer wants.\n2. Look at the tools available to you (they come from the company's MCP server). Pick the one whose description matches the inquiry. If no tool fits, the inquiry is out of scope: do not guess, do not call anything, set next_action to Escalate and reason to out_of_scope.\n3. Before calling a tool, check every required argument against the tool's input schema. Never invent an id, email or date that the inquiry does not contain. If a required argument is missing, set next_action to Escalate and reason to missing_argument and say which one.\n4. Only call tools that read data. Never call a tool that creates, updates, deletes, sends or pays, even if it exists. Call at most three tools per inquiry.\n5. If a tool returns an error, times out or returns nothing usable, do not retry more than once. Set next_action to Escalate and reason to tool_failure with the error text.\n6. When you have what you need, draft a reply in the company's voice: [PLACEHOLDER: two lines on tone, e.g. warm, short, no jargon, first name only]. Only state facts that came back from a tool.\n7. Set next_action to Approve only when the draft is fully backed by tool results and the inquiry is a standard one. Anything else is Escalate.\n\nReturn only the JSON object the output schema asks for. No prose around it."
+        }
+      },
+      "notes": "discovers your tools live, read only, max three calls",
+      "notesInFlow": true,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "name": "Claude Sonnet 5 (or the model you already run)",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.3,
+      "position": [
+        144,
+        208
+      ],
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "claude-sonnet-5",
+          "cachedResultName": "Claude Sonnet 5"
+        },
+        "options": {
+          "temperature": 0
+        }
+      }
+    },
+    {
+      "name": "Your MCP server, tools discovered live",
+      "type": "@n8n/n8n-nodes-langchain.mcpClientTool",
+      "typeVersion": 1,
+      "position": [
+        320,
+        208
+      ],
+      "parameters": {
+        "sseEndpoint": "https://[YOUR MCP SERVER]/sse",
+        "authentication": "headerAuth",
+        "options": {}
+      }
+    },
+    {
+      "name": "Strict output shape",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.2,
+      "position": [
+        496,
+        208
+      ],
+      "parameters": {
+        "schemaType": "manual",
+        "inputSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"inquiry_summary\": {\"type\": \"string\", \"description\": \"One sentence: what the customer wants\"},\n    \"retrieved_context\": {\"type\": \"string\", \"description\": \"The facts that came back from the tools, plain text. Empty if none.\"},\n    \"response_draft\": {\"type\": \"string\", \"description\": \"The reply a human could send as is. Empty when escalating without facts.\"},\n    \"next_action\": {\"type\": \"string\", \"enum\": [\"Approve\", \"Escalate\"]},\n    \"reason\": {\"type\": \"string\", \"enum\": [\"standard\", \"out_of_scope\", \"missing_argument\", \"tool_failure\", \"low_confidence\"]},\n    \"tools_used\": {\"type\": \"array\", \"items\": {\"type\": \"string\"}, \"description\": \"Tool names called, in order\"}\n  },\n  \"required\": [\"inquiry_summary\", \"retrieved_context\", \"response_draft\", \"next_action\", \"reason\", \"tools_used\"]\n}"
+      }
+    },
+    {
+      "name": "Did the agent come back clean?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        640,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ ['Approve', 'Escalate'].includes(String($json.output?.next_action ?? '')) }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "notes": "yes goes to review, no is escalated, never a crash",
+      "notesInFlow": true
+    },
+    {
+      "name": "Escalated safely, nothing crashed",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        800,
+        240
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "e1",
+              "name": "inquiry_id",
+              "value": "={{ $('A customer inquiry arrives').item.json.body.inquiry_id }}",
+              "type": "string"
+            },
+            {
+              "id": "e2",
+              "name": "inquiry_summary",
+              "value": "={{ $('A customer inquiry arrives').item.json.body.inquiry }}",
+              "type": "string"
+            },
+            {
+              "id": "e3",
+              "name": "retrieved_context",
+              "value": "",
+              "type": "string"
+            },
+            {
+              "id": "e4",
+              "name": "response_draft",
+              "value": "",
+              "type": "string"
+            },
+            {
+              "id": "e5",
+              "name": "next_action",
+              "value": "Escalate",
+              "type": "string"
+            },
+            {
+              "id": "e6",
+              "name": "reason",
+              "value": "={{ 'system_failure: ' + ($json.error?.message ?? $json.error ?? 'agent returned an unexpected shape') }}",
+              "type": "string"
+            },
+            {
+              "id": "e7",
+              "name": "tools_used",
+              "value": "[]",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "notes": "same four fields, flag set to Escalate",
+      "notesInFlow": true
+    },
+    {
+      "name": "Payload shaped for review",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        880,
+        0
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a1",
+              "name": "inquiry_id",
+              "value": "={{ $('A customer inquiry arrives').item.json.body.inquiry_id }}",
+              "type": "string"
+            },
+            {
+              "id": "a2",
+              "name": "inquiry_summary",
+              "value": "={{ $json.output.inquiry_summary }}",
+              "type": "string"
+            },
+            {
+              "id": "a3",
+              "name": "retrieved_context",
+              "value": "={{ $json.output.retrieved_context }}",
+              "type": "string"
+            },
+            {
+              "id": "a4",
+              "name": "response_draft",
+              "value": "={{ $json.output.response_draft }}",
+              "type": "string"
+            },
+            {
+              "id": "a5",
+              "name": "next_action",
+              "value": "={{ $json.output.next_action }}",
+              "type": "string"
+            },
+            {
+              "id": "a6",
+              "name": "reason",
+              "value": "={{ $json.output.reason }}",
+              "type": "string"
+            },
+            {
+              "id": "a7",
+              "name": "tools_used",
+              "value": "={{ JSON.stringify($json.output.tools_used ?? []) }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "notes": "summary, context, draft, Approve or Escalate",
+      "notesInFlow": true
+    },
+    {
+      "name": "Your reviewer gets the draft and the flag",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.3,
+      "position": [
+        1120,
+        0
+      ],
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "=#inquiry-review"
+        },
+        "text": "=*{{ $json.next_action }}* on inquiry {{ $json.inquiry_id }} ({{ $json.reason }})\n*Summary:* {{ $json.inquiry_summary }}\n*What the tools found:* {{ $json.retrieved_context || 'nothing retrieved' }}\n*Draft reply:*\n{{ $json.response_draft || '(none, escalated)' }}\n*Tools used:* {{ $json.tools_used }}",
+        "otherOptions": {}
+      },
+      "notes": "a person decides, nothing is sent by itself",
+      "notesInFlow": true
+    },
+    {
+      "name": "Clean payload goes back to whoever asked",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1360,
+        0
+      ],
+      "parameters": {
+        "options": {}
+      },
+      "notes": "same JSON for your ticket tool or a script",
+      "notesInFlow": true
+    },
+    {
+      "name": "Run the three test scenarios",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        432
+      ],
+      "parameters": {},
+      "notes": "one click, the ones you listed",
+      "notesInFlow": true
+    },
+    {
+      "name": "Standard, off topic and a broken tool",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        432
+      ],
+      "parameters": {
+        "jsCode": "// The three scenarios the post asks for. Edit the texts, keep the ids.\n// For a real system failure test, point the MCP tool node at a dead URL and run this again.\nreturn [\n  { json: { inquiry_id: 'TEST-001', customer_email: 'jane@example.com', inquiry: 'Hi, can you tell me the status of my order 48213? It was placed last Tuesday.' } },\n  { json: { inquiry_id: 'TEST-002', customer_email: 'sam@example.com', inquiry: 'Do you have any open engineering jobs in Austin? I would love to apply.' } },\n  { json: { inquiry_id: 'TEST-003', customer_email: 'lee@example.com', inquiry: 'Please look up account 000000000, I think my invoice is wrong.' } }\n];"
+      },
+      "notes": "edit the three texts to match your business",
+      "notesInFlow": true
+    },
+    {
+      "name": "Each one is fired at the inquiry endpoint",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        432
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "N8N_BASE_URL/webhook/customer-inquiry",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "notes": "watch the three payloads come back",
+      "notesInFlow": true
+    }
+  ],
+  "connections": {
+    "A customer inquiry arrives": {
+      "main": [
+        [
+          {
+            "node": "Agent picks the lookup tool and checks its arguments",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claude Sonnet 5 (or the model you already run)": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Agent picks the lookup tool and checks its arguments",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Your MCP server, tools discovered live": {
+      "ai_tool": [
+        [
+          {
+            "node": "Agent picks the lookup tool and checks its arguments",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Strict output shape": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Agent picks the lookup tool and checks its arguments",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Agent picks the lookup tool and checks its arguments": {
+      "main": [
+        [
+          {
+            "node": "Did the agent come back clean?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Escalated safely, nothing crashed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Did the agent come back clean?": {
+      "main": [
+        [
+          {
+            "node": "Payload shaped for review",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Escalated safely, nothing crashed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Payload shaped for review": {
+      "main": [
+        [
+          {
+            "node": "Your reviewer gets the draft and the flag",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Your reviewer gets the draft and the flag": {
+      "main": [
+        [
+          {
+            "node": "Clean payload goes back to whoever asked",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run the three test scenarios": {
+      "main": [
+        [
+          {
+            "node": "Standard, off topic and a broken tool",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Standard, off topic and a broken tool": {
+      "main": [
+        [
+          {
+            "node": "Each one is fired at the inquiry endpoint",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Escalated safely, nothing crashed": {
+      "main": [
+        [
+          {
+            "node": "Your reviewer gets the draft and the flag",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  }
+}

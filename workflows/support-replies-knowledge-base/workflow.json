@@ -1,0 +1,501 @@
+{
+  "name": "AI support replies from a knowledge base",
+  "nodes": [
+    {
+      "name": "Note: the problem",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -16,
+        -336
+      ],
+      "parameters": {
+        "content": "## What you told me, in plain English\n\n1. A customer email lands in your Gmail\n2. AI decides if it is a support request, everything else is left alone\n3. Your knowledge base in Pinecone is searched for the answer\n4. AI writes a professional reply from what it found\n5. The reply goes out in the same Gmail thread\n6. Nothing solid in the knowledge base? A human takes over\n",
+        "height": 230,
+        "width": 557
+      }
+    },
+    {
+      "name": "Note: my take",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -32,
+        880
+      ],
+      "parameters": {
+        "content": "## To go live, we wire\n\n- Your Gmail, OpenAI and Pinecone credentials in n8n, nothing hard-coded in the export\n- Your Pinecone index and namespace, docs embedded with the same model the search uses\n- Who gets escalations, and the match threshold, tuned on 20 of your real emails\n",
+        "height": 206,
+        "width": 640,
+        "color": 5
+      }
+    },
+    {
+      "name": "New email in your support inbox",
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "simple": false,
+        "filters": {
+          "labelIds": [
+            "INBOX"
+          ],
+          "readStatus": "unread"
+        },
+        "options": {}
+      },
+      "notes": "checked every minute, unread only",
+      "notesInFlow": true
+    },
+    {
+      "name": "Sender, subject, body and IDs captured",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        240,
+        0
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "f1",
+              "name": "from",
+              "value": "={{ $json.from.value[0].address }}",
+              "type": "string"
+            },
+            {
+              "id": "f2",
+              "name": "subject",
+              "value": "={{ $json.subject }}",
+              "type": "string"
+            },
+            {
+              "id": "f3",
+              "name": "body",
+              "value": "={{ $json.text }}",
+              "type": "string"
+            },
+            {
+              "id": "f4",
+              "name": "messageId",
+              "value": "={{ $json.id }}",
+              "type": "string"
+            },
+            {
+              "id": "f5",
+              "name": "threadId",
+              "value": "={{ $json.threadId }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "notes": "message ID and thread ID kept for the reply",
+      "notesInFlow": true
+    },
+    {
+      "name": "Support request or not?",
+      "type": "@n8n/n8n-nodes-langchain.textClassifier",
+      "typeVersion": 1,
+      "position": [
+        480,
+        0
+      ],
+      "parameters": {
+        "inputText": "=Subject: {{ $json.subject }}\n\n{{ $json.body }}",
+        "categories": {
+          "categories": [
+            {
+              "category": "support",
+              "description": "A customer or client asking for help: a question about a service, a problem, a bug, an access issue, billing or account help, a how-do-I question."
+            },
+            {
+              "category": "other",
+              "description": "Anything else: auto-replies and out-of-office messages, newsletters, sales pitches, vendor invoices, internal chatter, automated notifications, spam."
+            }
+          ]
+        },
+        "options": {
+          "fallback": "other"
+        }
+      },
+      "notes": "AI sorts, non-support leaves here",
+      "notesInFlow": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "name": "OpenAI model for sorting",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1,
+      "position": [
+        480,
+        208
+      ],
+      "parameters": {
+        "model": "gpt-4.1-mini",
+        "options": {
+          "temperature": 0
+        }
+      }
+    },
+    {
+      "name": "Knowledge base searched in Pinecone",
+      "type": "@n8n/n8n-nodes-langchain.vectorStorePinecone",
+      "typeVersion": 1,
+      "position": [
+        816,
+        16
+      ],
+      "parameters": {
+        "mode": "load",
+        "pineconeIndex": {
+          "__rl": true,
+          "mode": "list",
+          "value": "[YOUR-INDEX]"
+        },
+        "prompt": "={{ $('Sender, subject, body and IDs captured').item.json.subject }}\n{{ $('Sender, subject, body and IDs captured').item.json.body }}",
+        "options": {
+          "pineconeNamespace": "[YOUR-NAMESPACE]"
+        }
+      },
+      "notes": "top 4 matches for this email",
+      "notesInFlow": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "alwaysOutputData": true
+    },
+    {
+      "name": "OpenAI embeddings",
+      "type": "@n8n/n8n-nodes-langchain.embeddingsOpenAi",
+      "typeVersion": 1,
+      "position": [
+        816,
+        224
+      ],
+      "parameters": {
+        "model": "text-embedding-3-small",
+        "options": {}
+      }
+    },
+    {
+      "name": "Best matches bundled as context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1104,
+        16
+      ],
+      "parameters": {
+        "jsCode": "// Pinecone returns one item per match. Keep the ones above the threshold, glue them into one context block.\nconst THRESHOLD = 0.75; // tune on real emails\nconst hits = $input.all().map(i => i.json).filter(h => h.document);\nconst good = hits.filter(h => (h.score ?? 0) >= THRESHOLD);\nreturn [{ json: {\n  matches: good.length,\n  topScore: hits.length ? Math.max(...hits.map(h => h.score ?? 0)) : 0,\n  context: good.map((h, i) => `[${i + 1}] ${h.document.pageContent}`).join('\\n\\n')\n} }];"
+      },
+      "notes": "keeps only matches that really fit",
+      "notesInFlow": true
+    },
+    {
+      "name": "Enough knowledge to answer?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1344,
+        16
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "k1",
+              "leftValue": "={{ $json.matches }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "notes": "no match means a human answers",
+      "notesInFlow": true
+    },
+    {
+      "name": "Escalated to your team",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1344,
+        224
+      ],
+      "parameters": {
+        "sendTo": "[SUPPORT LEAD EMAIL]",
+        "subject": "=Needs a human: {{ $('Sender, subject, body and IDs captured').item.json.subject }}",
+        "emailType": "text",
+        "message": "=The knowledge base had no solid answer (best match {{ $json.topScore }}).\n\nFrom: {{ $('Sender, subject, body and IDs captured').item.json.from }}\nSubject: {{ $('Sender, subject, body and IDs captured').item.json.subject }}\n\n{{ $('Sender, subject, body and IDs captured').item.json.body }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "notes": "the email plus what the search found",
+      "notesInFlow": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "name": "AI writes the reply from your knowledge",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.8,
+      "position": [
+        1584,
+        16
+      ],
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "gpt-4.1-mini",
+          "cachedResultName": "gpt-4.1-mini"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "You are the support team of [AGENCY NAME]. Write a short, professional, friendly reply to the customer's email. Use ONLY the facts in the knowledge excerpts. If the excerpts do not fully answer the question, answer what they cover and say a team member will follow up on the rest. Never invent prices, dates, links or promises. Plain text, no markdown, sign off as [SIGN-OFF].",
+              "role": "system"
+            },
+            {
+              "content": "=Customer email\nFrom: {{ $('Sender, subject, body and IDs captured').item.json.from }}\nSubject: {{ $('Sender, subject, body and IDs captured').item.json.subject }}\n\n{{ $('Sender, subject, body and IDs captured').item.json.body }}\n\nKnowledge excerpts\n{{ $json.context }}"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.3
+        }
+      },
+      "notes": "only facts from the matches, your tone",
+      "notesInFlow": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "name": "Reply sent in the same Gmail thread",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1872,
+        16
+      ],
+      "parameters": {
+        "operation": "reply",
+        "messageId": "={{ $('Sender, subject, body and IDs captured').item.json.messageId }}",
+        "emailType": "text",
+        "message": "={{ $json.message.content }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "notes": "threaded, marked as handled",
+      "notesInFlow": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "name": "Not a support email, left alone",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        0,
+        384
+      ],
+      "parameters": {},
+      "notes": "stays unread in the inbox",
+      "notesInFlow": true
+    },
+    {
+      "name": "Something failed after the retries",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        608
+      ],
+      "parameters": {},
+      "notes": "credentials, API down, rate limits",
+      "notesInFlow": true
+    },
+    {
+      "name": "Your team gets the failure alert",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        240,
+        608
+      ],
+      "parameters": {
+        "sendTo": "[SUPPORT LEAD EMAIL]",
+        "subject": "=Support workflow failed at: {{ $json.execution.lastNodeExecuted }}",
+        "emailType": "text",
+        "message": "=Error: {{ $json.execution.error.message }}\nExecution: {{ $json.execution.url }}\n\nThe email was not answered automatically. Please reply by hand and check the credential or API named above.",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "notes": "which step, which email, the error",
+      "notesInFlow": true
+    }
+  ],
+  "connections": {
+    "New email in your support inbox": {
+      "main": [
+        [
+          {
+            "node": "Sender, subject, body and IDs captured",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sender, subject, body and IDs captured": {
+      "main": [
+        [
+          {
+            "node": "Support request or not?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI model for sorting": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Support request or not?",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Support request or not?": {
+      "main": [
+        [
+          {
+            "node": "Knowledge base searched in Pinecone",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Not a support email, left alone",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI embeddings": {
+      "ai_embedding": [
+        [
+          {
+            "node": "Knowledge base searched in Pinecone",
+            "type": "ai_embedding",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Knowledge base searched in Pinecone": {
+      "main": [
+        [
+          {
+            "node": "Best matches bundled as context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Best matches bundled as context": {
+      "main": [
+        [
+          {
+            "node": "Enough knowledge to answer?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enough knowledge to answer?": {
+      "main": [
+        [
+          {
+            "node": "AI writes the reply from your knowledge",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Escalated to your team",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI writes the reply from your knowledge": {
+      "main": [
+        [
+          {
+            "node": "Reply sent in the same Gmail thread",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Something failed after the retries": {
+      "main": [
+        [
+          {
+            "node": "Your team gets the failure alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  }
+}
